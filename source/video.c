@@ -8,6 +8,8 @@
 
 #include "video.h"
 
+#include "log.h"
+
 #include <SDL2/SDL.h>
 #include <math.h>
 #include <switch.h>
@@ -25,14 +27,27 @@ bool video_init(void)
     s_window = SDL_CreateWindow("Grand Theft Auto VI",
                                 SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                 1920, 1080, SDL_WINDOW_FULLSCREEN);
-    if (s_window == NULL)
+    if (s_window == NULL) {
+        log_line("SDL_CreateWindow failed: %s", SDL_GetError());
         return false;
+    }
 
     s_renderer = SDL_CreateRenderer(s_window, -1, SDL_RENDERER_ACCELERATED);
-    if (s_renderer == NULL)
+    if (s_renderer == NULL) {
+        log_line("accelerated renderer failed (%s), trying software", SDL_GetError());
         s_renderer = SDL_CreateRenderer(s_window, -1, SDL_RENDERER_SOFTWARE);
-    if (s_renderer == NULL)
+    }
+    if (s_renderer == NULL) {
+        log_line("SDL_CreateRenderer failed: %s", SDL_GetError());
         return false;
+    }
+
+    {
+        SDL_RendererInfo info;
+
+        if (SDL_GetRendererInfo(s_renderer, &info) == 0)
+            log_line("renderer: %s", info.name);
+    }
 
     SDL_ShowCursor(SDL_DISABLE);
     SDL_SetRenderDrawColor(s_renderer, 0, 0, 0, 0xFF);

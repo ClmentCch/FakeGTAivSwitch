@@ -21,6 +21,7 @@
 #include "media.h"
 
 #include "audio.h"
+#include "log.h"
 #include "video.h"
 
 #include <switch.h>
@@ -34,6 +35,7 @@
 #include <libswscale/swscale.h>
 
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -117,6 +119,31 @@ static int64_t io_seek(void *opaque, int64_t offset, int whence)
 }
 
 /* ------------------------------------------------------------------------- */
+/* Logging                                                                   */
+/* ------------------------------------------------------------------------- */
+
+/* FFmpeg messages are forwarded to the SD log: they are invisible on screen
+ * but tell exactly why a file could not be opened or decoded. */
+static void ffmpeg_log_cb(void *avcl, int level, const char *fmt, va_list vl)
+{
+    char buf[512];
+    size_t len;
+
+    (void)avcl;
+
+    if (level > AV_LOG_WARNING)
+        return;
+
+    vsnprintf(buf, sizeof(buf), fmt, vl);
+
+    len = strlen(buf);
+    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r'))
+        buf[--len] = '\0';
+
+    log_line("[ffmpeg] %s", buf);
+}
+
+/* ------------------------------------------------------------------------- */
 /* Opening / closing                                                         */
 /* ------------------------------------------------------------------------- */
 
@@ -163,9 +190,14 @@ Media *media_open(const char *path)
     m->vs = -1;
     m->as = -1;
 
+    av_log_set_level(AV_LOG_WARNING);
+    av_log_set_callback(ffmpeg_log_cb);
+
     m->file = fopen(path, "rb");
-    if (m->file == NULL)
+    if (m->file == NULL) {
+        log_line("cannot open %s: %s", path, strerror(errno));
         goto fail;
+    }
 
     iobuf = av_malloc(AVIO_BUFFER_SIZE);
     if (iobuf == NULL)
@@ -185,31 +217,49 @@ Media *media_open(const char *path)
     m->fmt->pb = m->avio;
     m->fmt->flags |= AVFMT_FLAG_CUSTOM_IO;
 
-    if (avformat_open_input(&m->fmt, NULL, NULL, NULL) < 0)
+    if (avformat_open_input(&m->fmt, NULL, NULL, NULL) < 0) {
+        log_line("avformat_open_input failed");
         goto fail;
+    }
 
-    if (avformat_find_stream_info(m->fmt, NULL) < 0)
+    if (avformat_find_stream_info(m->fmt, NULL) < 0) {
+        log_line("avformat_find_stream_info failed");
         goto fail;
+    }
 
     m->vs = av_find_best_stream(m->fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
-    if (m->vs < 0)
+    if (m->vs < 0) {
+        log_line("no video stream found");
         goto fail;
+    }
 
     m->as = av_find_best_stream(m->fmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
 
     m->vctx = open_decoder(m->fmt, m->vs);
-    if (m->vctx == NULL)
+    if (m->vctx == NULL) {
+        log_line("no decoder for video stream %d (%s)", m->vs,
+                 avcodec_get_name(m->fmt->streams[m->vs]->codecpar->codec_id));
         goto fail;
+    }
 
     if (m->as >= 0) {
         m->actx = open_decoder(m->fmt, m->as);
-        if (m->actx == NULL)
+        if (m->actx == NULL) {
+            log_line("no decoder for audio stream %d, playing silently", m->as);
             m->as = -1; /* play silently instead of failing */
+        }
     }
 
     vstream = m->fmt->streams[m->vs];
     m->vtb = av_q2d(vstream->time_base);
     m->vstart = vstream->start_time == AV_NOPTS_VALUE ? 0 : vstream->start_time;
+
+    log_line("media: %dx%d %s, %.2f fps, %.1f s, threads %d, audio %d",
+             m->vctx->width, m->vctx->height,
+             avcodec_get_name(m->vctx->codec_id),
+             vstream->avg_frame_rate.num != 0 ? av_q2d(vstream->avg_frame_rate) : 0.0,
+             m->fmt->duration > 0 ? (double)m->fmt->duration / (double)AV_TIME_BASE : 0.0,
+             m->vctx->thread_count, m->as);
 
     m->pkt = av_packet_alloc();
     m->frame = av_frame_alloc();

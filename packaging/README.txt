@@ -51,4 +51,10 @@ des images, mais le son reste synchronise.
 VERSION
 -------
 
-Grand Theft Auto VI 1.0.1
+Grand Theft Auto VI 1.3.0
+
+En cas de probleme au lancement, un journal est ecrit a cote du NRO :
+
+    sdmc:/switch/gtaVI/gtaVI.log
+
+Il indique chaque etape du demarrage et la raison d'un eventuel plantage.

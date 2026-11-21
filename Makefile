@@ -27,13 +27,13 @@ NACP        := $(TARGET).nacp
 
 APP_TITLE   := Grand Theft Auto VI
 APP_AUTHOR  := ClmentCch
-APP_VERSION := 1.0.1
+APP_VERSION := 1.3.0
 
 ARCH        := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE -ftls-model=local-exec
 
 CFLAGS      := -g -O2 -Wall -Wextra -Wno-unused-parameter -std=gnu17 \
                -ffunction-sections -fdata-sections $(ARCH) \
-               -D__SWITCH__ \
+               -D__SWITCH__ -DAPP_VERSION=\"$(APP_VERSION)\" \
                -I$(DEVKITPRO)/libnx/include -I$(PORTLIBS)/include
 
 LDFLAGS     := -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) \

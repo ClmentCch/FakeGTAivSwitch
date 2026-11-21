@@ -30,12 +30,12 @@ s'arrête immédiatement.
    `video.mp4`.
 3. Lancez **Grand Theft Auto VI** depuis le Homebrew Menu.
 
-L'archive `gtaVI-1.0.1.zip` contient l'arborescence `switch/gtaVI/` :
+L'archive `gtaVI-1.3.0.zip` contient l'arborescence `switch/gtaVI/` :
 décompressez-la directement à la racine de la carte SD, puis ajoutez votre
 `video.mp4` dans `sdmc:/switch/gtaVI/`.
 
 ```
-gtaVI-1.0.1.zip
+gtaVI-1.3.0.zip
 └── switch/
     └── gtaVI/
         ├── gtaVI.nro
@@ -88,7 +88,7 @@ Prérequis : [devkitPro](https://devkitpro.org/wiki/Getting_Started) avec
 ```bash
 export DEVKITPRO=/opt/devkitpro
 make            # produit gtaVI.elf, gtaVI.nacp et gtaVI.nro
-make dist       # produit dist/gtaVI-1.0.1.zip
+make dist       # produit dist/gtaVI-1.3.0.zip
 ```
 
 ou, en une commande :
@@ -100,7 +100,7 @@ ou, en une commande :
 Détails de la compilation :
 
 * Le NACP est généré par `nacptool` (nom affiché : **Grand Theft Auto VI**,
-  version 1.0.1) puis embarqué par `elf2nro`.
+  version 1.3.0) puis embarqué par `elf2nro`.
 * L'icône du Homebrew Menu est `icon.jpg`, conversion 256×256 du logo fourni
   dans le dépôt (`logovideo.png`).
 * Le NRO final s'appelle exactement `gtaVI.nro`.
@@ -118,6 +118,23 @@ icon.jpg              icône 256×256 du Homebrew Menu (issue de logovideo.png)
 logovideo.png         logo d'origine fourni dans le dépôt
 packaging/README.txt  notice incluse dans l'archive ZIP
 ```
+
+## Corrections de la version 1.3.0
+
+* **Lancement depuis le Homebrew Menu (mode applet / Album)** : l'application
+  appelait `SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER)` et
+  quittait immédiatement si l'un des sous-systèmes échouait. En mode applet le
+  périphérique audio est souvent refusé, ce qui provoquait un écran noir de
+  quelques dixièmes de seconde puis un retour direct au Homebrew Menu. La
+  vidéo est maintenant initialisée seule (obligatoire) et l'audio est tenté à
+  part : s'il échoue, la vidéo est lue sans son au lieu de quitter.
+* Le système de fichiers est monté **avant** toute initialisation, pour que le
+  journal et la vidéo soient accessibles dès le démarrage.
+* **Journal de diagnostic** : l'application écrit `switch/gtaVI/gtaVI.log`
+  (invisible à l'écran) avec chaque étape du démarrage, les messages de FFmpeg
+  et les erreurs, ce qui permet de comprendre un plantage.
+* Mise en veille automatique désactivée pendant la lecture : l'écran ne
+  s'éteint plus au bout de quelques minutes sans bouton pressé.
 
 ## Corrections de la version 1.0.1
 

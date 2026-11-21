@@ -27,6 +27,11 @@ bool audio_init(void)
 {
     SDL_AudioSpec want;
 
+    /* The audio subsystem is initialised on its own: a failure here must not
+     * take the video down with it. */
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0)
+        return false;
+
     SDL_zero(want);
     want.freq = 48000;
     want.format = AUDIO_S16SYS;

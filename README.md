@@ -30,12 +30,12 @@ s'arrête immédiatement.
    `video.mp4`.
 3. Lancez **Grand Theft Auto VI** depuis le Homebrew Menu.
 
-L'archive `gtaVI-2.1.0.zip` contient l'arborescence `switch/gtaVI/` :
+L'archive `gtaVI-2.2.0.zip` contient l'arborescence `switch/gtaVI/` :
 décompressez-la directement à la racine de la carte SD, puis ajoutez votre
 `video.mp4` dans `sdmc:/switch/gtaVI/`.
 
 ```
-gtaVI-2.1.0.zip
+gtaVI-2.2.0.zip
 └── switch/
     └── gtaVI/
         ├── gtaVI.nro
@@ -90,7 +90,7 @@ nécessaire.
 ```bash
 export DEVKITPRO=/opt/devkitpro
 make            # produit gtaVI.elf, gtaVI.nacp et gtaVI.nro
-make dist       # produit dist/gtaVI-2.1.0.zip
+make dist       # produit dist/gtaVI-2.2.0.zip
 ```
 
 ou, en une commande :
@@ -102,7 +102,7 @@ ou, en une commande :
 Détails de la compilation :
 
 * Le NACP est généré par `nacptool` (nom affiché : **Grand Theft Auto VI**,
-  version 2.1.0) puis embarqué par `elf2nro`.
+  version 2.2.0) puis embarqué par `elf2nro`.
 * L'icône du Homebrew Menu est `icon.jpg`, conversion 256×256 du logo fourni
   dans le dépôt (`logovideo.png`).
 * Le NRO final s'appelle exactement `gtaVI.nro`.
@@ -122,6 +122,20 @@ icon.jpg              icône 256×256 du Homebrew Menu (issue de logovideo.png)
 logovideo.png         logo d'origine fourni dans le dépôt
 packaging/README.txt  notice incluse dans l'archive ZIP
 ```
+
+## Corrections de la version 2.2.0
+
+* **La vidéo restait figée sur la première image pendant que le son continuait.**
+  Le son démarrait avant que la première image de la boucle soit décodée : sur
+  l'horloge audio, toutes les images suivantes paraissaient alors en retard et
+  étaient jetées.
+  - La première image de chaque boucle est maintenant décodée et affichée
+    **avant** le démarrage de l'horloge audio.
+  - Même si le décodeur ne tient pas le temps réel (vidéo 4K par exemple), au
+    plus 4 images consécutives peuvent être sautées : la 5e est affichée quoi
+    qu'il arrive, donc l'image ne gèle plus jamais.
+* Le journal enregistre la cadence réelle : `playing: N shown, M dropped,
+  clock Xs` toutes les 2 secondes, et `loop end: N shown, M dropped`.
 
 ## Corrections de la version 2.1.0
 

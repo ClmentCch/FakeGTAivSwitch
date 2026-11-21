@@ -48,6 +48,10 @@
 /* Small head start that compensates the presentation latency. */
 #define PRESENT_LEAD 0.008
 
+/* A decoder that cannot keep up must not freeze the screen: late frames are
+ * dropped, but never more than this many in a row. */
+#define MAX_DROP_STREAK 4
+
 /* Size of the buffer FFmpeg reads from the SD card through. */
 #define AVIO_BUFFER_SIZE (64 * 1024)
 
@@ -76,6 +80,11 @@ struct Media {
     int      pcm_frames;
 
     double last_pts;
+
+    int      late_streak;
+    unsigned shown;
+    unsigned dropped;
+    uint64_t stat_ms;
 };
 
 /* ------------------------------------------------------------------------- */
@@ -168,7 +177,7 @@ static AVCodecContext *open_decoder(AVFormatContext *fmt, int index)
     }
 
     ctx->pkt_timebase = stream->time_base;
-    ctx->thread_count = 3; /* bounded memory on the console */
+    ctx->thread_count = 4; /* bounded memory on the console */
 
     ret = avcodec_open2(ctx, codec, NULL);
     if (ret < 0) {
@@ -385,8 +394,10 @@ static bool convert_and_show(Media *m, AVFrame *frame)
     if (base == NULL)
         return false;
 
-    /* Letterbox bars are black. */
-    memset(base, 0, (size_t)stride * (size_t)out_h);
+    /* Only the letterbox area needs clearing: when the picture fills the
+     * screen the scaling pass overwrites every pixel. */
+    if (off_y > 0 || off_x > 0 || dst_w < out_w || dst_h < out_h)
+        memset(base, 0, (size_t)stride * (size_t)out_h);
 
     dst_data[0] = base + (size_t)off_y * (size_t)stride + (size_t)off_x * 4u;
     dst_data[1] = NULL;
@@ -413,9 +424,14 @@ static bool show_frame(Media *m, AVFrame *frame, MediaIdleFn idle, void *user, b
     if (timed) {
         uint64_t wait_start = time_ms();
 
-        if (audio_clock() - pts > VIDEO_LATE_TOLERANCE) {
+        /* Late frames are dropped to keep sound and picture together, but a
+         * decoder slower than real time must not leave the screen frozen on
+         * one picture: after a few drops the next frame is shown anyway. */
+        if (audio_clock() - pts > VIDEO_LATE_TOLERANCE && m->late_streak < MAX_DROP_STREAK) {
+            m->late_streak++;
+            m->dropped++;
             audio_pump();
-            return true; /* too late: drop it and stay in sync */
+            return true;
         }
 
         for (;;) {
@@ -441,6 +457,9 @@ static bool show_frame(Media *m, AVFrame *frame, MediaIdleFn idle, void *user, b
             svcSleepThread((u64)(wait * 1000000000.0));
         }
     }
+
+    m->late_streak = 0;
+    m->shown++;
 
     return convert_and_show(m, frame);
 }
@@ -616,9 +635,53 @@ bool media_first_frame(Media *m)
     }
 }
 
+/* Decodes and presents the first picture of the loop. Audio packets read on
+ * the way are skipped: the audio timeline starts once the picture is on
+ * screen, otherwise the sound immediately runs ahead of a frame that has not
+ * been decoded yet and every following frame looks late. */
+static bool first_frame_of_loop(Media *m, MediaIdleFn idle, void *user)
+{
+    for (;;) {
+        int ret;
+        bool shown = false;
+
+        if (!idle(user))
+            return false;
+
+        ret = av_read_frame(m->fmt, m->pkt);
+        if (ret < 0)
+            return false;
+
+        if (m->pkt->stream_index == m->vs) {
+            ret = avcodec_send_packet(m->vctx, m->pkt);
+            if (ret >= 0 || ret == AVERROR(EAGAIN)) {
+                if (avcodec_receive_frame(m->vctx, m->frame) == 0) {
+                    shown = convert_and_show(m, m->frame);
+                    av_frame_unref(m->frame);
+                }
+            }
+        }
+
+        av_packet_unref(m->pkt);
+
+        if (shown)
+            return true;
+    }
+}
+
 bool media_play(Media *m, MediaIdleFn idle, void *user)
 {
     rewind_media(m);
+
+    m->shown = 0;
+    m->dropped = 0;
+    m->late_streak = 0;
+    m->stat_ms = time_ms();
+
+    if (!first_frame_of_loop(m, idle, user)) {
+        if (!idle(user))
+            return false;
+    }
 
     audio_start();
     audio_use_wallclock(m->as < 0 || !audio_available());
@@ -653,6 +716,12 @@ bool media_play(Media *m, MediaIdleFn idle, void *user)
         }
 
         av_packet_unref(m->pkt);
+
+        if (time_ms() - m->stat_ms >= 2000) {
+            m->stat_ms = time_ms();
+            log_line("playing: %u shown, %u dropped, clock %.1fs",
+                     m->shown, m->dropped, audio_clock());
+        }
 
         if (!ok) {
             if (!idle(user))
@@ -697,6 +766,8 @@ bool media_play(Media *m, MediaIdleFn idle, void *user)
             svcSleepThread(10 * 1000 * 1000ULL);
         }
     }
+
+    log_line("loop end: %u shown, %u dropped", m->shown, m->dropped);
 
     return true;
 }

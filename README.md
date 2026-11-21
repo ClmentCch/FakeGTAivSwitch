@@ -1,1 +1,120 @@
-# FakeGTAivSwitch
+# Grand Theft Auto VI — homebrew Nintendo Switch
+
+Application homebrew Nintendo Switch (format NRO) qui lit une vidéo MP4 en
+plein écran avec le son, en boucle, sans aucune interface : pas de menu, pas de
+texte, pas de bouton, pas de barre de progression.
+
+Au lancement (et à chaque redémarrage de la boucle), la première image de la
+vidéo reste affichée deux secondes, puis la lecture démarre avec le son. Le
+bouton **+** quitte proprement l'application.
+
+## Structure de la carte SD
+
+```
+sdmc:/
+└── switch/
+    └── gtaVI/
+        ├── gtaVI.nro
+        └── video.mp4
+```
+
+Le chemin de lecture est fixé dans le code : `sdmc:/switch/gtaVI/video.mp4`.
+Le fichier vidéo reste externe au NRO — il n'est ni embarqué, ni téléchargé,
+ni remplacé par une vidéo de démonstration. Sans ce fichier, l'application
+s'arrête immédiatement.
+
+## Installation
+
+1. Copiez `gtaVI.nro` dans `sdmc:/switch/gtaVI/`.
+2. Copiez votre propre vidéo dans le même dossier, en la nommant exactement
+   `video.mp4`.
+3. Lancez **Grand Theft Auto VI** depuis le Homebrew Menu.
+
+L'archive `gtaVI-1.0.0.zip` contient le dossier `gtaVI/` prêt à être copié à
+la racine de la carte SD ; il ne reste qu'à y ajouter votre `video.mp4`.
+
+## Utilisation
+
+| Action | Effet |
+| --- | --- |
+| Lancement | Affichage de la première image pendant ~2 s, puis lecture |
+| Fin de la vidéo | Retour au début, première image pendant ~2 s, puis lecture |
+| Bouton **+** | Quitte l'application |
+
+Aucune connexion Internet n'est utilisée : tout est lu depuis la carte SD.
+
+## Formats vidéo
+
+Le décodage est assuré par FFmpeg (libavformat / libavcodec / libswscale /
+libswresample) compilé pour la Switch, avec sortie SDL2 plein écran.
+
+* Conteneur : MP4 (démuxeur `mov`) — MKV et les autres conteneurs reconnus par
+  FFmpeg fonctionnent également.
+* Vidéo : H.264 (recommandé), HEVC, VP9, MPEG-4/MPEG-2, etc. — tout codec
+  présent dans la bibliothèque FFmpeg utilisée à la compilation.
+* Audio : AAC (recommandé), MP3, AC-3, etc. — converti en stéréo 16 bits
+  dans la fréquence du périphérique audio.
+* La vidéo est mise à l'échelle en conservant son ratio ; des bandes noires
+  apparaissent si le format n'est pas 16:9.
+
+**Recommandation pour une lecture fluide :** H.264 dans un MP4, 1280×720 ou
+1920×1080, 30 images/seconde, AAC stéréo 48 kHz. Le décodage est logiciel :
+un fichier 1080p à 60 images/seconde peut dépasser les capacités du processeur
+de la console et entraîner des images sautées (le son reste, lui, synchronisé).
+
+## Synchronisation audio / vidéo
+
+Le périphérique audio est l'horloge maître : la position de lecture est
+calculée à partir des échantillons réellement consommés par le moteur audio,
+et chaque image est présentée lorsqu'elle atteint son horodatage sur cette
+horloge. Les images trop en retard sont sautées, la file audio est limitée à
+0,5 s, et une horloge de secours prend le relais si le son s'interrompt. La
+lecture reste donc synchronisée du début à la fin, y compris à chaque boucle.
+
+## Compilation
+
+Prérequis : [devkitPro](https://devkitpro.org/wiki/Getting_Started) avec
+`devkitA64`, `libnx`, `switch-tools`, `switch-sdl2` et `switch-ffmpeg`.
+
+```bash
+export DEVKITPRO=/opt/devkitpro
+make            # produit gtaVI.elf, gtaVI.nacp et gtaVI.nro
+make dist       # produit dist/gtaVI-1.0.0.zip
+```
+
+ou, en une commande :
+
+```bash
+./build.sh
+```
+
+Détails de la compilation :
+
+* Le NACP est généré par `nacptool` (nom affiché : **Grand Theft Auto VI**,
+  version 1.0.0) puis embarqué par `elf2nro`.
+* L'icône du Homebrew Menu est `icon.jpg`, conversion 256×256 du logo fourni
+  dans le dépôt (`logovideo.png`).
+* Le NRO final s'appelle exactement `gtaVI.nro`.
+
+## Structure du dépôt
+
+```
+Makefile              compilation devkitPro/libnx
+build.sh              script de compilation + archive d'installation
+source/main.c         point d'entrée, boucle, phase de 2 s, bouton +
+source/media.c/.h     démuxage MP4, décodage FFmpeg, synchronisation
+source/audio.c/.h     sortie audio SDL et horloge de lecture
+source/video.c/.h     fenêtre plein écran SDL2 et rendu des images
+icon.jpg              icône 256×256 du Homebrew Menu (issue de logovideo.png)
+logovideo.png         logo d'origine fourni dans le dépôt
+packaging/README.txt  notice incluse dans l'archive ZIP
+```
+
+## Limites connues
+
+* Le NRO est compilé avec devkitA64, libnx, SDL2 et FFmpeg pour la Switch,
+  mais il n'a pas été exécuté sur une console physique lors de cette
+  publication : la validation sur matériel réel reste à faire.
+* Pas de lecture réseau ni de flux : uniquement un fichier local.
+* Décodage logiciel uniquement (pas d'accélération matérielle vidéo), d'où la
+  recommandation ci-dessus concernant la résolution et la fréquence d'images.

@@ -51,7 +51,7 @@ des images, mais le son reste synchronise.
 VERSION
 -------
 
-Grand Theft Auto VI 2.2.0
+Grand Theft Auto VI 2.5.0
 
 En cas de probleme au lancement, un journal est ecrit a cote du NRO :
 

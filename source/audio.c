@@ -6,6 +6,11 @@
  * released. The device consumes samples at the hardware rate, so the number of
  * frames handed out minus the frames still queued is exactly the playback
  * position, which is used as the master clock.
+ *
+ * Feeding the device happens in a dedicated thread: video decoding can take a
+ * long time on a heavy file, and the audio device only holds a fraction of a
+ * second of samples. Without its own thread the device underruns and the sound
+ * crackles as soon as one picture takes too long to decode.
  */
 
 #include "audio.h"
@@ -18,17 +23,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define AUDIO_RATE   48000
+#define AUDIO_RATE     48000
 #define AUDIO_CHANNELS 2
 #define BYTES_PER_FRAME (AUDIO_CHANNELS * sizeof(int16_t))
 
 /* 3 seconds of slack between decoding and the device. */
 #define RING_BYTES (AUDIO_RATE * 3 * BYTES_PER_FRAME)
 
-/* 1024 frames = 4096 bytes = 0x1000, the alignment audout requires. */
+/* 1024 frames = 4096 bytes = 0x1000, the alignment audout requires. Six
+ * buffers give about 128 ms of headroom in the device itself. */
 #define BUFFER_FRAMES 1024
 #define BUFFER_BYTES  (BUFFER_FRAMES * BYTES_PER_FRAME)
-#define BUFFER_COUNT  4
+#define BUFFER_COUNT  6
 
 /* audout wants buffers aligned to 0x1000 bytes. */
 static void *alloc_aligned(size_t size)
@@ -40,6 +46,8 @@ static void *alloc_aligned(size_t size)
 
 static bool s_ready;
 static u32  s_rate = AUDIO_RATE;
+
+static Mutex s_lock;
 
 static uint8_t *s_ring;
 static u32      s_head;
@@ -58,8 +66,12 @@ static uint64_t s_progress_ms;
 static uint64_t s_start_ms;
 static bool     s_wallclock;
 
+static Thread         s_thread;
+static volatile bool  s_thread_stop;
+static bool           s_thread_started;
+
 /* ------------------------------------------------------------------------- */
-/* Ring buffer                                                               */
+/* Ring buffer (all accesses happen with s_lock held)                         */
 /* ------------------------------------------------------------------------- */
 
 static void ring_write(const uint8_t *src, u32 bytes)
@@ -146,11 +158,8 @@ static void collect_released(void)
     }
 }
 
-void audio_pump(void)
+static void pump_locked(void)
 {
-    if (!s_ready)
-        return;
-
     collect_released();
 
     while (s_used > 0) {
@@ -188,6 +197,27 @@ void audio_pump(void)
     }
 }
 
+void audio_pump(void)
+{
+    if (!s_ready)
+        return;
+
+    mutexLock(&s_lock);
+    pump_locked();
+    mutexUnlock(&s_lock);
+}
+
+/* Keeps the device fed whatever the video decoder is doing. */
+static void audio_thread(void *arg)
+{
+    (void)arg;
+
+    while (!s_thread_stop) {
+        audio_pump();
+        svcSleepThread(4 * 1000 * 1000ULL);
+    }
+}
+
 /* ------------------------------------------------------------------------- */
 /* Setup                                                                     */
 /* ------------------------------------------------------------------------- */
@@ -205,6 +235,8 @@ bool audio_init(void)
     AudioOutState state = AudioOutState_Stopped;
     u32 channels_out = 0;
     Result rc;
+
+    mutexInit(&s_lock);
 
     rc = audoutInitialize();
     if (R_FAILED(rc)) {
@@ -249,6 +281,17 @@ bool audio_init(void)
     s_ready = true;
     audio_start();
 
+    s_thread_stop = false;
+    rc = threadCreate(&s_thread, audio_thread, NULL, NULL, 0x4000, 0x20, -2);
+    if (R_SUCCEEDED(rc))
+        rc = threadStart(&s_thread);
+    if (R_SUCCEEDED(rc)) {
+        s_thread_started = true;
+    } else {
+        log_line("audio thread failed: 0x%x", rc);
+        s_thread_started = false;
+    }
+
     return true;
 }
 
@@ -256,6 +299,13 @@ void audio_exit(void)
 {
     if (!s_ready)
         return;
+
+    if (s_thread_started) {
+        s_thread_stop = true;
+        threadWaitForExit(&s_thread);
+        threadClose(&s_thread);
+        s_thread_started = false;
+    }
 
     audoutStopAudioOut();
     audoutExit();
@@ -284,6 +334,14 @@ int audio_rate(void)
 
 void audio_start(void)
 {
+    if (!s_ready) {
+        s_start_ms = time_ms();
+        s_wallclock = true;
+        return;
+    }
+
+    mutexLock(&s_lock);
+
     s_head = 0;
     s_used = 0;
     s_written = 0;
@@ -292,10 +350,7 @@ void audio_start(void)
     s_stall_offset = 0.0;
     s_progress_ms = time_ms();
     s_start_ms = s_progress_ms;
-    s_wallclock = !s_ready;
-
-    if (!s_ready)
-        return;
+    s_wallclock = false;
 
     /* Whatever was queued belongs to the previous loop: drop it so nothing is
      * heard during the two seconds the first picture is held. */
@@ -304,7 +359,6 @@ void audio_start(void)
 
         audoutFlushAudioOutBuffers(&flushed);
 
-        /* Give the buffers back after the flush. */
         for (int i = 0; i < 8; i++) {
             AudioOutBuffer *released = NULL;
             u32 count = 0;
@@ -319,6 +373,8 @@ void audio_start(void)
             }
         }
     }
+
+    mutexUnlock(&s_lock);
 }
 
 void audio_push(const int16_t *frames, int count)
@@ -329,6 +385,8 @@ void audio_push(const int16_t *frames, int count)
     if (!s_ready || frames == NULL || count <= 0)
         return;
 
+    mutexLock(&s_lock);
+
     bytes = (u32)count * BYTES_PER_FRAME;
     space = RING_BYTES - s_used;
 
@@ -338,17 +396,24 @@ void audio_push(const int16_t *frames, int count)
     if (bytes > 0)
         ring_write((const uint8_t *)frames, bytes);
 
-    audio_pump();
+    pump_locked();
+
+    mutexUnlock(&s_lock);
 }
 
 int audio_queued_frames(void)
 {
+    int queued;
+
     if (!s_ready)
         return 0;
 
+    mutexLock(&s_lock);
     collect_released();
+    queued = (int)(s_used / BYTES_PER_FRAME + s_queued);
+    mutexUnlock(&s_lock);
 
-    return (int)(s_used / BYTES_PER_FRAME + s_queued);
+    return queued;
 }
 
 void audio_use_wallclock(bool enabled)
@@ -361,9 +426,12 @@ double audio_clock(void)
 {
     uint64_t now;
     double played;
+    double result;
 
     if (s_wallclock || !s_ready)
         return (double)(time_ms() - s_start_ms) / 1000.0;
+
+    mutexLock(&s_lock);
 
     collect_released();
 
@@ -383,5 +451,9 @@ double audio_clock(void)
         s_progress_ms = now;
     }
 
-    return (played + s_stall_offset) / (double)audio_rate();
+    result = (played + s_stall_offset) / (double)audio_rate();
+
+    mutexUnlock(&s_lock);
+
+    return result;
 }

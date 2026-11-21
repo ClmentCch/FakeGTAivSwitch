@@ -156,12 +156,19 @@ static void ffmpeg_log_cb(void *avcl, int level, const char *fmt, va_list vl)
 /* Opening / closing                                                         */
 /* ------------------------------------------------------------------------- */
 
-static AVCodecContext *open_decoder(AVFormatContext *fmt, int index)
+static AVCodecContext *open_decoder(AVFormatContext *fmt, int index, bool is_video)
 {
     AVStream *stream = fmt->streams[index];
-    const AVCodec *codec = avcodec_find_decoder(stream->codecpar->codec_id);
+    const AVCodec *codec = NULL;
     AVCodecContext *ctx;
     int ret;
+
+    /* dav1d decodes AV1 far faster than FFmpeg's built-in decoder. */
+    if (is_video && stream->codecpar->codec_id == AV_CODEC_ID_AV1)
+        codec = avcodec_find_decoder_by_name("libdav1d");
+
+    if (codec == NULL)
+        codec = avcodec_find_decoder(stream->codecpar->codec_id);
 
     if (codec == NULL)
         return NULL;
@@ -177,7 +184,18 @@ static AVCodecContext *open_decoder(AVFormatContext *fmt, int index)
     }
 
     ctx->pkt_timebase = stream->time_base;
-    ctx->thread_count = 4; /* bounded memory on the console */
+
+    if (is_video) {
+        ctx->thread_count = 4; /* bounded memory on the console */
+
+        /* A source larger than the screen cannot be decoded in real time in
+         * software on this hardware: trade a little quality (deblocking) for a
+         * frame rate that still looks like video instead of a slideshow. */
+        if (stream->codecpar->width > 1920 || stream->codecpar->height > 1080) {
+            ctx->flags2 |= AV_CODEC_FLAG2_FAST;
+            ctx->skip_loop_filter = AVDISCARD_ALL;
+        }
+    }
 
     ret = avcodec_open2(ctx, codec, NULL);
     if (ret < 0) {
@@ -246,7 +264,7 @@ Media *media_open(const char *path)
 
     m->as = av_find_best_stream(m->fmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
 
-    m->vctx = open_decoder(m->fmt, m->vs);
+    m->vctx = open_decoder(m->fmt, m->vs, true);
     if (m->vctx == NULL) {
         log_line("no decoder for video stream %d (%s)", m->vs,
                  avcodec_get_name(m->fmt->streams[m->vs]->codecpar->codec_id));
@@ -254,7 +272,7 @@ Media *media_open(const char *path)
     }
 
     if (m->as >= 0) {
-        m->actx = open_decoder(m->fmt, m->as);
+        m->actx = open_decoder(m->fmt, m->as, false);
         if (m->actx == NULL) {
             log_line("no decoder for audio stream %d, playing silently", m->as);
             m->as = -1; /* play silently instead of failing */
@@ -270,9 +288,10 @@ Media *media_open(const char *path)
     if (m->pkt == NULL || m->frame == NULL)
         goto fail;
 
-    log_line("media: %dx%d %s, %.2f fps, %.1f s, threads %d, audio %d",
+    log_line("media: %dx%d %s (decoder %s), %.2f fps, %.1f s, threads %d, audio %d",
              m->vctx->width, m->vctx->height,
              avcodec_get_name(m->vctx->codec_id),
+             m->vctx->codec != NULL ? m->vctx->codec->name : "?",
              vstream->avg_frame_rate.num != 0 ? av_q2d(vstream->avg_frame_rate) : 0.0,
              m->fmt->duration > 0 ? (double)m->fmt->duration / (double)AV_TIME_BASE : 0.0,
              m->vctx->thread_count, m->as);

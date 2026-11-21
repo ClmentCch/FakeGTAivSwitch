@@ -30,12 +30,12 @@ s'arrête immédiatement.
    `video.mp4`.
 3. Lancez **Grand Theft Auto VI** depuis le Homebrew Menu.
 
-L'archive `gtaVI-2.2.0.zip` contient l'arborescence `switch/gtaVI/` :
+L'archive `gtaVI-2.5.0.zip` contient l'arborescence `switch/gtaVI/` :
 décompressez-la directement à la racine de la carte SD, puis ajoutez votre
 `video.mp4` dans `sdmc:/switch/gtaVI/`.
 
 ```
-gtaVI-2.2.0.zip
+gtaVI-2.5.0.zip
 └── switch/
     └── gtaVI/
         ├── gtaVI.nro
@@ -90,7 +90,7 @@ nécessaire.
 ```bash
 export DEVKITPRO=/opt/devkitpro
 make            # produit gtaVI.elf, gtaVI.nacp et gtaVI.nro
-make dist       # produit dist/gtaVI-2.2.0.zip
+make dist       # produit dist/gtaVI-2.5.0.zip
 ```
 
 ou, en une commande :
@@ -102,7 +102,7 @@ ou, en une commande :
 Détails de la compilation :
 
 * Le NACP est généré par `nacptool` (nom affiché : **Grand Theft Auto VI**,
-  version 2.2.0) puis embarqué par `elf2nro`.
+  version 2.5.0) puis embarqué par `elf2nro`.
 * L'icône du Homebrew Menu est `icon.jpg`, conversion 256×256 du logo fourni
   dans le dépôt (`logovideo.png`).
 * Le NRO final s'appelle exactement `gtaVI.nro`.
@@ -122,6 +122,26 @@ icon.jpg              icône 256×256 du Homebrew Menu (issue de logovideo.png)
 logovideo.png         logo d'origine fourni dans le dépôt
 packaging/README.txt  notice incluse dans l'archive ZIP
 ```
+
+## Corrections de la version 2.5.0
+
+* **Son saturé / haché** : le périphérique audio n'était alimenté que depuis la
+  boucle principale. Décoder une image lourde prenait plus de temps que les
+  ~85 ms de tampon du périphérique, qui tombait en sous-alimentation. L'audio a
+  maintenant **son propre thread** (priorité plus haute que la vidéo) qui
+  réalimente `audout` toutes les 4 ms, avec 6 tampons au lieu de 4. Le son ne
+  dépend plus du temps de décodage.
+* **Environ 4 images/s** : le fichier source est très probablement du 4K, que ce
+  matériel ne peut pas décoder en temps réel en logiciel. Pour les sources plus
+  grandes que l'écran, le décodeur est réglé en mode rapide
+  (`AV_CODEC_FLAG2_FAST`, filtrage de blocage désactivé) et 4 threads sont
+  utilisés.
+* **Décodeur le plus rapide** : pour l'AV1, `libdav1d` est utilisé en priorité
+  s'il est disponible.
+* Le journal précise la résolution, le codec et **le décodeur réellement
+  utilisé**, ainsi que la cadence (`playing: N shown, M dropped`).
+* Rappel de format : 1280×720 ou 1920×1080 en H.264 à 30 i/s pour une lecture
+  fluide ; un fichier 4K sera lu avec des images sautées.
 
 ## Corrections de la version 2.2.0
 

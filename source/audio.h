@@ -13,9 +13,12 @@
 
 /* Opens the default audio device (48 kHz, signed 16-bit, stereo).
  * Returns false when no audio device is available; the player then falls
- * back to a wall clock. */
+ * back to a wall clock and keeps showing the video. */
 bool audio_init(void);
 void audio_exit(void);
+
+/* True when an audio device was opened successfully. */
+bool audio_available(void);
 
 /* Sample rate actually used by the device. */
 int audio_rate(void);

@@ -78,10 +78,8 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
-    if (!audio_init()) {
-        printf("gtaVI: cannot open the audio device\n");
-        goto cleanup;
-    }
+    if (!audio_init())
+        printf("gtaVI: no audio device available, playing without sound\n");
 
     media = media_open(VIDEO_PATH);
     if (media == NULL) {

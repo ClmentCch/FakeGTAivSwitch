@@ -1,6 +1,11 @@
 /*
  * media.c - MP4 demuxing, decoding and playback.
  *
+ * The file is opened with libnx's stdio (newlib devoptab) and handed to
+ * FFmpeg through a custom AVIOContext. This is required because FFmpeg parses
+ * "sdmc:/..." as a protocol named "sdmc", which does not exist in the file
+ * protocol set.
+ *
  * libavformat reads the container, libavcodec decodes the video and audio
  * streams, libswscale converts the decoded pictures to BGRA for the SDL
  * renderer and libswresample converts the audio to the stereo s16 stream the
@@ -28,6 +33,8 @@
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 
+#include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -41,7 +48,12 @@
 /* Small head start that compensates the compositor/presentation latency. */
 #define PRESENT_LEAD 0.008
 
+/* Size of the buffer FFmpeg reads from the SD card through. */
+#define AVIO_BUFFER_SIZE (64 * 1024)
+
 struct Media {
+    FILE            *file;
+    AVIOContext     *avio;
     AVFormatContext *fmt;
     AVCodecContext  *vctx;
     AVCodecContext  *actx;
@@ -63,6 +75,50 @@ struct Media {
 
     double   last_pts;
 };
+
+/* ------------------------------------------------------------------------- */
+/* SD card I/O for FFmpeg                                                    */
+/* ------------------------------------------------------------------------- */
+
+static int io_read(void *opaque, uint8_t *buf, int size)
+{
+    FILE *fp = opaque;
+    size_t got = fread(buf, 1, (size_t)size, fp);
+
+    if (got == 0)
+        return ferror(fp) ? AVERROR(EIO) : AVERROR_EOF;
+
+    return (int)got;
+}
+
+static int64_t io_seek(void *opaque, int64_t offset, int whence)
+{
+    FILE *fp = opaque;
+    long current;
+
+    if (whence == AVSEEK_SIZE) {
+        current = ftell(fp);
+        if (current < 0)
+            return AVERROR(EIO);
+        if (fseek(fp, 0, SEEK_END) != 0)
+            return AVERROR(EIO);
+        offset = (int64_t)ftell(fp);
+        if (fseek(fp, current, SEEK_SET) != 0)
+            return AVERROR(EIO);
+        return offset;
+    }
+
+    whence &= ~AVSEEK_FORCE;
+
+    if (fseek(fp, (long)offset, whence) != 0)
+        return AVERROR(EIO);
+
+    return (int64_t)ftell(fp);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Opening / closing                                                         */
+/* ------------------------------------------------------------------------- */
 
 static AVCodecContext *open_decoder(AVFormatContext *fmt, int index)
 {
@@ -99,7 +155,7 @@ Media *media_open(const char *path)
 {
     Media *m = calloc(1, sizeof(*m));
     AVStream *vstream;
-    int ret;
+    uint8_t *iobuf;
 
     if (m == NULL)
         return NULL;
@@ -107,12 +163,32 @@ Media *media_open(const char *path)
     m->vs = -1;
     m->as = -1;
 
-    ret = avformat_open_input(&m->fmt, path, NULL, NULL);
-    if (ret < 0)
+    m->file = fopen(path, "rb");
+    if (m->file == NULL)
         goto fail;
 
-    ret = avformat_find_stream_info(m->fmt, NULL);
-    if (ret < 0)
+    iobuf = av_malloc(AVIO_BUFFER_SIZE);
+    if (iobuf == NULL)
+        goto fail;
+
+    m->avio = avio_alloc_context(iobuf, AVIO_BUFFER_SIZE, 0,
+                                 m->file, io_read, NULL, io_seek);
+    if (m->avio == NULL) {
+        av_free(iobuf);
+        goto fail;
+    }
+
+    m->fmt = avformat_alloc_context();
+    if (m->fmt == NULL)
+        goto fail;
+
+    m->fmt->pb = m->avio;
+    m->fmt->flags |= AVFMT_FLAG_CUSTOM_IO;
+
+    if (avformat_open_input(&m->fmt, NULL, NULL, NULL) < 0)
+        goto fail;
+
+    if (avformat_find_stream_info(m->fmt, NULL) < 0)
         goto fail;
 
     m->vs = av_find_best_stream(m->fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
@@ -169,6 +245,13 @@ void media_close(Media *m)
         avcodec_free_context(&m->vctx);
     if (m->fmt != NULL)
         avformat_close_input(&m->fmt);
+
+    if (m->avio != NULL) {
+        av_freep(&m->avio->buffer);
+        avio_context_free(&m->avio);
+    }
+    if (m->file != NULL)
+        fclose(m->file);
 
     free(m->pcm);
     free(m);
@@ -378,6 +461,19 @@ static bool drain_audio(Media *m, MediaIdleFn idle, void *user)
     }
 }
 
+/* An audio problem must never stop the picture: drop the audio track and
+ * continue on the wall clock. */
+static void disable_audio(Media *m)
+{
+    if (m->actx != NULL)
+        avcodec_free_context(&m->actx);
+    if (m->swr != NULL)
+        swr_free(&m->swr);
+
+    m->as = -1;
+    audio_use_wallclock(true);
+}
+
 /* ------------------------------------------------------------------------- */
 /* Playback                                                                  */
 /* ------------------------------------------------------------------------- */
@@ -398,6 +494,10 @@ static void rewind_media(Media *m)
 
 bool media_first_frame(Media *m)
 {
+    /* Silence the device: nothing must be heard during the two seconds the
+     * first picture is held on screen. */
+    audio_start();
+
     rewind_media(m);
 
     for (;;) {
@@ -429,15 +529,14 @@ bool media_first_frame(Media *m)
 
 bool media_play(Media *m, MediaIdleFn idle, void *user)
 {
-    bool ok = true;
-
     rewind_media(m);
 
     audio_start();
-    audio_use_wallclock(m->as < 0);
+    audio_use_wallclock(m->as < 0 || !audio_available());
 
     for (;;) {
         int ret;
+        bool ok = true;
 
         if (!idle(user))
             return false;
@@ -453,25 +552,35 @@ bool media_play(Media *m, MediaIdleFn idle, void *user)
             if (avcodec_send_packet(m->vctx, m->pkt) >= 0)
                 ok = drain_video(m, idle, user, true);
         } else if (m->actx != NULL && m->pkt->stream_index == m->as) {
-            if (avcodec_send_packet(m->actx, m->pkt) >= 0)
+            if (avcodec_send_packet(m->actx, m->pkt) >= 0) {
                 ok = drain_audio(m, idle, user);
+                if (!ok) {
+                    ok = true;
+                    disable_audio(m);
+                }
+            }
         }
 
         av_packet_unref(m->pkt);
 
-        if (!ok)
-            return false;
+        if (!ok) {
+            if (!idle(user))
+                return false; /* the user pressed "+" */
+            break;            /* video decode error: restart the loop */
+        }
     }
 
     /* Flush the decoders so the tail of the file is played too. */
     if (avcodec_send_packet(m->vctx, NULL) >= 0) {
-        if (!drain_video(m, idle, user, true))
+        if (!drain_video(m, idle, user, true) && !idle(user))
             return false;
     }
 
     if (m->actx != NULL) {
-        if (avcodec_send_packet(m->actx, NULL) >= 0)
-            drain_audio(m, idle, user);
+        if (avcodec_send_packet(m->actx, NULL) >= 0) {
+            if (!drain_audio(m, idle, user) && !idle(user))
+                return false;
+        }
 
         if (m->swr != NULL && m->pcm != NULL) {
             uint8_t *out[1];

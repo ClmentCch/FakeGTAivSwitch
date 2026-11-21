@@ -8,9 +8,9 @@ Bouton "+" : quitte l'application.
 INSTALLATION SUR LA CARTE SD
 ----------------------------
 
-Copiez le dossier "gtaVI" (contenant gtaVI.nro) dans le dossier "switch" de
-votre carte SD. Placez ensuite VOTRE fichier video dans ce meme dossier, en le
-nommant exactement "video.mp4".
+Cette archive contient deja l'arborescence "switch/gtaVI/". Decompressez-la
+directement a la racine de la carte SD, puis placez VOTRE fichier video dans
+le dossier gtaVI en le nommant exactement "video.mp4".
 
 Structure attendue sur la carte SD :
 
@@ -19,6 +19,7 @@ Structure attendue sur la carte SD :
         +-- gtaVI/
             +-- gtaVI.nro
             +-- video.mp4      <-- votre video, a ajouter
+            +-- README.txt     <-- cette notice
 
 La video n'est PAS fournie avec cette archive. L'application lit toujours :
 
@@ -50,4 +51,4 @@ des images, mais le son reste synchronise.
 VERSION
 -------
 
-Grand Theft Auto VI 1.0.0
+Grand Theft Auto VI 1.0.1

@@ -30,8 +30,17 @@ s'arrête immédiatement.
    `video.mp4`.
 3. Lancez **Grand Theft Auto VI** depuis le Homebrew Menu.
 
-L'archive `gtaVI-1.0.0.zip` contient le dossier `gtaVI/` prêt à être copié à
-la racine de la carte SD ; il ne reste qu'à y ajouter votre `video.mp4`.
+L'archive `gtaVI-1.0.1.zip` contient l'arborescence `switch/gtaVI/` :
+décompressez-la directement à la racine de la carte SD, puis ajoutez votre
+`video.mp4` dans `sdmc:/switch/gtaVI/`.
+
+```
+gtaVI-1.0.1.zip
+└── switch/
+    └── gtaVI/
+        ├── gtaVI.nro
+        └── README.txt
+```
 
 ## Utilisation
 
@@ -79,7 +88,7 @@ Prérequis : [devkitPro](https://devkitpro.org/wiki/Getting_Started) avec
 ```bash
 export DEVKITPRO=/opt/devkitpro
 make            # produit gtaVI.elf, gtaVI.nacp et gtaVI.nro
-make dist       # produit dist/gtaVI-1.0.0.zip
+make dist       # produit dist/gtaVI-1.0.1.zip
 ```
 
 ou, en une commande :
@@ -91,7 +100,7 @@ ou, en une commande :
 Détails de la compilation :
 
 * Le NACP est généré par `nacptool` (nom affiché : **Grand Theft Auto VI**,
-  version 1.0.0) puis embarqué par `elf2nro`.
+  version 1.0.1) puis embarqué par `elf2nro`.
 * L'icône du Homebrew Menu est `icon.jpg`, conversion 256×256 du logo fourni
   dans le dépôt (`logovideo.png`).
 * Le NRO final s'appelle exactement `gtaVI.nro`.
@@ -109,6 +118,23 @@ icon.jpg              icône 256×256 du Homebrew Menu (issue de logovideo.png)
 logovideo.png         logo d'origine fourni dans le dépôt
 packaging/README.txt  notice incluse dans l'archive ZIP
 ```
+
+## Corrections de la version 1.0.1
+
+* Ouverture du fichier vidéo via libnx (`fopen`) et un `AVIOContext` FFmpeg
+  personnalisé : FFmpeg interprétait `sdmc:` comme un nom de protocole et
+  refusait d'ouvrir `sdmc:/switch/gtaVI/video.mp4`.
+* Silence garanti pendant les deux secondes d'affichage de la première image :
+  la sortie audio est vidée et mise en pause avant chaque boucle, plus aucun
+  reste de son de la boucle précédente.
+* Robustesse : une erreur de décodage au milieu du fichier relance la boucle au
+  lieu de fermer l'application ; une piste audio illisible est abandonnée et
+  la vidéo continue sur l'horloge système.
+* Périphérique audio : la fréquence et la taille de tampon imposées par le
+  moteur audio de la console sont acceptées (le rééchantillonnage suit).
+* Sans périphérique audio, la vidéo est jouée quand même au lieu de quitter.
+* Archive d'installation : elle contient maintenant `switch/gtaVI/`, donc
+  directement décompressable à la racine de la carte SD.
 
 ## Limites connues
 

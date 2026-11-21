@@ -33,13 +33,19 @@ bool audio_init(void)
     want.channels = 2;
     want.samples = 1024;
 
-    s_device = SDL_OpenAudioDevice(NULL, 0, &want, &s_spec, 0);
+    /* The Switch audio engine may impose its own rate and buffer size, so
+     * those two are allowed to change; the resampler follows the rate that is
+     * finally obtained. */
+    s_device = SDL_OpenAudioDevice(NULL, 0, &want, &s_spec,
+                                   SDL_AUDIO_ALLOW_FREQUENCY_CHANGE |
+                                   SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
     if (s_device == 0)
         return false;
 
     if (s_spec.format != AUDIO_S16SYS || s_spec.channels != 2) {
         SDL_CloseAudioDevice(s_device);
         s_device = 0;
+        SDL_zero(s_spec);
         return false;
     }
 
@@ -52,7 +58,13 @@ void audio_exit(void)
     if (s_device != 0) {
         SDL_CloseAudioDevice(s_device);
         s_device = 0;
+        SDL_zero(s_spec);
     }
+}
+
+bool audio_available(void)
+{
+    return s_device != 0;
 }
 
 int audio_rate(void)
@@ -62,19 +74,19 @@ int audio_rate(void)
 
 void audio_start(void)
 {
-    if (s_device == 0)
-        return;
-
-    SDL_PauseAudioDevice(s_device, 1);
-    SDL_ClearQueuedAudio(s_device);
-
     s_written = 0;
     s_consumed = 0.0;
     s_stall_offset = 0.0;
     s_progress_ms = SDL_GetTicks64();
     s_start_ms = s_progress_ms;
     s_paused = true;
-    s_wallclock = false;
+    s_wallclock = s_device == 0;
+
+    if (s_device == 0)
+        return;
+
+    SDL_PauseAudioDevice(s_device, 1);
+    SDL_ClearQueuedAudio(s_device);
 }
 
 void audio_push(const int16_t *frames, int count)
@@ -107,21 +119,21 @@ int audio_queued_frames(void)
 
 void audio_use_wallclock(bool enabled)
 {
-    s_wallclock = enabled;
+    s_wallclock = enabled || s_device == 0;
     s_start_ms = SDL_GetTicks64();
 }
 
 double audio_clock(void)
 {
-    if (s_wallclock)
-        return (double)(SDL_GetTicks64() - s_start_ms) / 1000.0;
+    uint64_t now;
 
-    if (s_device == 0)
+    if (s_wallclock || s_device == 0)
         return (double)(SDL_GetTicks64() - s_start_ms) / 1000.0;
 
     double queued = (double)SDL_GetQueuedAudioSize(s_device) / (double)frame_size();
     double played = (double)s_written - queued;
-    uint64_t now = SDL_GetTicks64();
+
+    now = SDL_GetTicks64();
 
     if (played < 0.0)
         played = 0.0;

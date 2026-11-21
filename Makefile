@@ -27,7 +27,7 @@ NACP        := $(TARGET).nacp
 
 APP_TITLE   := Grand Theft Auto VI
 APP_AUTHOR  := ClmentCch
-APP_VERSION := 1.0.0
+APP_VERSION := 1.0.1
 
 ARCH        := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE -ftls-model=local-exec
 
@@ -71,11 +71,11 @@ $(TARGET).nro: $(TARGET).elf $(NACP) $(ICON)
 	@$(ELF2NRO) $(TARGET).elf $@ --icon=$(ICON) --nacp=$(NACP)
 
 dist: all
-	@rm -rf dist && mkdir -p dist/gtaVI
-	@cp $(TARGET).nro dist/gtaVI/
-	@cp packaging/README.txt dist/gtaVI/
-	@cd dist && zip -9 -q -r $(TARGET)-$(APP_VERSION).zip gtaVI
-	@echo "  ZIP  dist/$(TARGET)-$(APP_VERSION).zip"
+	@rm -rf dist && mkdir -p dist/switch/$(TARGET)
+	@cp $(TARGET).nro dist/switch/$(TARGET)/
+	@cp packaging/README.txt dist/switch/$(TARGET)/
+	@cd dist && zip -9 -q -r $(TARGET)-$(APP_VERSION).zip switch
+	@echo "  ZIP  dist/$(TARGET)-$(APP_VERSION).zip (switch/$(TARGET)/)"
 
 clean:
 	@rm -rf $(BUILD) $(TARGET).elf $(TARGET).nro $(TARGET).nacp $(TARGET).map dist

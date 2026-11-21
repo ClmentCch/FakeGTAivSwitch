@@ -55,6 +55,7 @@ static u32      s_used;
 
 static AudioOutBuffer s_buffers[BUFFER_COUNT];
 static void          *s_buffer_mem[BUFFER_COUNT];
+static u32            s_buffer_frames[BUFFER_COUNT];
 static int            s_free[BUFFER_COUNT];
 static int            s_free_count;
 
@@ -144,12 +145,20 @@ static void collect_released(void)
             return;
 
         for (u32 i = 0; i < count; i++) {
+            u32 frames;
+
             index = buffer_index(released[i].buffer);
             if (index < 0)
                 continue;
 
-            if (s_queued >= released[i].data_size / BYTES_PER_FRAME)
-                s_queued -= released[i].data_size / BYTES_PER_FRAME;
+            /* The frame count is remembered when the buffer is submitted: the
+             * service may report the whole buffer instead of the data actually
+             * queued, and a wrong count stalls the clock and the frame pacing. */
+            frames = s_buffer_frames[index];
+            s_buffer_frames[index] = 0;
+
+            if (s_queued >= frames)
+                s_queued -= frames;
             else
                 s_queued = 0;
 
@@ -192,6 +201,7 @@ static void pump_locked(void)
             break;
         }
 
+        s_buffer_frames[index] = frames;
         s_written += frames;
         s_queued += frames;
     }
@@ -368,8 +378,10 @@ void audio_start(void)
 
             for (u32 k = 0; k < count; k++) {
                 int index = buffer_index(released[k].buffer);
-                if (index >= 0 && s_free_count < BUFFER_COUNT)
+                if (index >= 0 && s_free_count < BUFFER_COUNT) {
+                    s_buffer_frames[index] = 0;
                     buffer_release(index);
+                }
             }
         }
     }

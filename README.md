@@ -30,12 +30,12 @@ s'arrête immédiatement.
    `video.mp4`.
 3. Lancez **Grand Theft Auto VI** depuis le Homebrew Menu.
 
-L'archive `gtaVI-2.5.0.zip` contient l'arborescence `switch/gtaVI/` :
+L'archive `gtaVI-3.0.0.zip` contient l'arborescence `switch/gtaVI/` :
 décompressez-la directement à la racine de la carte SD, puis ajoutez votre
 `video.mp4` dans `sdmc:/switch/gtaVI/`.
 
 ```
-gtaVI-2.5.0.zip
+gtaVI-3.0.0.zip
 └── switch/
     └── gtaVI/
         ├── gtaVI.nro
@@ -90,7 +90,7 @@ nécessaire.
 ```bash
 export DEVKITPRO=/opt/devkitpro
 make            # produit gtaVI.elf, gtaVI.nacp et gtaVI.nro
-make dist       # produit dist/gtaVI-2.5.0.zip
+make dist       # produit dist/gtaVI-3.0.0.zip
 ```
 
 ou, en une commande :
@@ -102,7 +102,7 @@ ou, en une commande :
 Détails de la compilation :
 
 * Le NACP est généré par `nacptool` (nom affiché : **Grand Theft Auto VI**,
-  version 2.5.0) puis embarqué par `elf2nro`.
+  version 3.0.0) puis embarqué par `elf2nro`.
 * L'icône du Homebrew Menu est `icon.jpg`, conversion 256×256 du logo fourni
   dans le dépôt (`logovideo.png`).
 * Le NRO final s'appelle exactement `gtaVI.nro`.
@@ -122,6 +122,23 @@ icon.jpg              icône 256×256 du Homebrew Menu (issue de logovideo.png)
 logovideo.png         logo d'origine fourni dans le dépôt
 packaging/README.txt  notice incluse dans l'archive ZIP
 ```
+
+## Corrections de la version 3.0.0
+
+* **Comptabilité des tampons audio corrigée** : le nombre d'échantillons encore
+  dans le périphérique est désormais mémorisé par tampon au moment de l'envoi.
+  Le service `audout` peut renvoyer la taille du tampon entier et non les
+  données réellement envoyées : la file paraissait alors pleine en permanence,
+  la boucle patientait (chute de la cadence) et des morceaux d'échantillons
+  étaient coupés (son haché/saturé).
+* **Sources lourdes (4K)** : en plus du mode rapide et du filtrage de blocage
+  désactivé, seules les images de référence sont décodées
+  (`skip_frame = AVDISCARD_NONREF`). La charge de décodage est à peu près
+  divisée par deux pour une source qui ne peut de toute façon pas être affichée
+  à sa cadence d'origine ; le mouvement reste continu.
+* **AV1** : `libdav1d` (présent dans la toolchain) est utilisé en priorité, au
+  lieu du décodeur AV1 intégré de FFmpeg qui est plusieurs fois plus lent.
+* Le journal indique le décodeur réellement utilisé et la cadence obtenue.
 
 ## Corrections de la version 2.5.0
 

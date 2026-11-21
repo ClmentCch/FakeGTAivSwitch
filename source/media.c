@@ -194,6 +194,10 @@ static AVCodecContext *open_decoder(AVFormatContext *fmt, int index, bool is_vid
         if (stream->codecpar->width > 1920 || stream->codecpar->height > 1080) {
             ctx->flags2 |= AV_CODEC_FLAG2_FAST;
             ctx->skip_loop_filter = AVDISCARD_ALL;
+            /* Decoding only the reference frames halves the work on a source
+             * that cannot be shown at full rate anyway, and keeps the picture
+             * moving smoothly instead of dropping almost everything. */
+            ctx->skip_frame = AVDISCARD_NONREF;
         }
     }
 

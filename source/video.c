@@ -15,8 +15,12 @@
 
 #include <string.h>
 
-#define SCREEN_WIDTH  1920
-#define SCREEN_HEIGHT 1080
+/* The compositor scales this layer to the whole screen. Rendering at 1280x720
+ * divides by 2.25 the work of the colour conversion, the block-linear
+ * conversion and the cache flush, which is what actually limits the frame rate
+ * on this console. */
+#define SCREEN_WIDTH  1280
+#define SCREEN_HEIGHT 720
 
 static Framebuffer s_fb;
 static bool        s_ready;

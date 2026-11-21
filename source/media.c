@@ -191,13 +191,23 @@ static AVCodecContext *open_decoder(AVFormatContext *fmt, int index, bool is_vid
         /* A source larger than the screen cannot be decoded in real time in
          * software on this hardware: trade a little quality (deblocking) for a
          * frame rate that still looks like video instead of a slideshow. */
-        if (stream->codecpar->width > 1920 || stream->codecpar->height > 1080) {
+        double src_fps = stream->avg_frame_rate.num != 0
+                             ? av_q2d(stream->avg_frame_rate)
+                             : 0.0;
+
+        /* A 4K source, or one that asks for 60 pictures per second, cannot be
+         * decoded in real time in software on this hardware. In that case the
+         * decoder is told to work less: no deblocking, and only the reference
+         * frames are decoded (about half of a 60 fps stream, leaving 30 fps of
+         * perfectly valid pictures) instead of dropping almost everything. */
+        if (stream->codecpar->width > 1920 || stream->codecpar->height > 1080 ||
+            src_fps > 40.0) {
             ctx->flags2 |= AV_CODEC_FLAG2_FAST;
             ctx->skip_loop_filter = AVDISCARD_ALL;
-            /* Decoding only the reference frames halves the work on a source
-             * that cannot be shown at full rate anyway, and keeps the picture
-             * moving smoothly instead of dropping almost everything. */
             ctx->skip_frame = AVDISCARD_NONREF;
+
+            log_line("decoder limited: %dx%d at %.1f fps (fast mode, reference frames only)",
+                     stream->codecpar->width, stream->codecpar->height, src_fps);
         }
     }
 

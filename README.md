@@ -30,12 +30,12 @@ s'arrête immédiatement.
    `video.mp4`.
 3. Lancez **Grand Theft Auto VI** depuis le Homebrew Menu.
 
-L'archive `gtaVI-3.0.0.zip` contient l'arborescence `switch/gtaVI/` :
+L'archive `gtaVI-3.1.1.zip` contient l'arborescence `switch/gtaVI/` :
 décompressez-la directement à la racine de la carte SD, puis ajoutez votre
 `video.mp4` dans `sdmc:/switch/gtaVI/`.
 
 ```
-gtaVI-3.0.0.zip
+gtaVI-3.1.1.zip
 └── switch/
     └── gtaVI/
         ├── gtaVI.nro
@@ -90,7 +90,7 @@ nécessaire.
 ```bash
 export DEVKITPRO=/opt/devkitpro
 make            # produit gtaVI.elf, gtaVI.nacp et gtaVI.nro
-make dist       # produit dist/gtaVI-3.0.0.zip
+make dist       # produit dist/gtaVI-3.1.1.zip
 ```
 
 ou, en une commande :
@@ -102,7 +102,7 @@ ou, en une commande :
 Détails de la compilation :
 
 * Le NACP est généré par `nacptool` (nom affiché : **Grand Theft Auto VI**,
-  version 3.0.0) puis embarqué par `elf2nro`.
+  version 3.1.1) puis embarqué par `elf2nro`.
 * L'icône du Homebrew Menu est `icon.jpg`, conversion 256×256 du logo fourni
   dans le dépôt (`logovideo.png`).
 * Le NRO final s'appelle exactement `gtaVI.nro`.
@@ -122,6 +122,25 @@ icon.jpg              icône 256×256 du Homebrew Menu (issue de logovideo.png)
 logovideo.png         logo d'origine fourni dans le dépôt
 packaging/README.txt  notice incluse dans l'archive ZIP
 ```
+
+## Corrections de la version 3.1.1
+
+Le journal de la 3.0.0 a montré une source **H.264 1920×1080 à 60 i/s**, 0 image
+sautée, mais une horloge audio qui n'avançait que de 0,3 s toutes les 2 s :
+tout le pipeline tournait ~6× trop lentement, donc lecture au ralenti et son
+haché (le périphérique n'était alimenté qu'au rythme du décodage).
+
+* **Rendu en 1280×720** au lieu de 1920×1080, comme le fait PlayerNX : le
+  compositeur agrandit l'image à l'écran. La conversion de couleurs par
+  libswscale (sans noyau NEON pour le YUV→RGB, cf. l'avertissement du journal),
+  la conversion block-linear de libnx et le vidage de cache travaillent sur
+  2,25× moins de pixels.
+* **Sources à plus de 40 i/s** (comme ce fichier 60 i/s) : le décodeur ne
+  décode plus que les images de référence (`skip_frame = AVDISCARD_NONREF`),
+  soit environ 30 images/s valides, et le filtrage de blocage est désactivé.
+  La charge de décodage est à peu près divisée par deux.
+* Le journal indique la restriction appliquée :
+  `decoder limited: 1920x1080 at 60.0 fps (fast mode, reference frames only)`.
 
 ## Corrections de la version 3.0.0
 

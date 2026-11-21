@@ -16,12 +16,12 @@
  * frames are presented when their timestamp is reached on that clock.
  */
 
-#include "media.h"
+#include "player.h"
 
 #include "audio.h"
 #include "log.h"
 #include "timebase.h"
-#include "video.h"
+#include "gfx.h"
 
 #include <switch.h>
 
@@ -55,7 +55,7 @@
 /* Size of the buffer FFmpeg reads from the SD card through. */
 #define AVIO_BUFFER_SIZE (64 * 1024)
 
-struct Media {
+struct Player {
     FILE            *file;
     AVIOContext     *avio;
     AVFormatContext *fmt;
@@ -85,7 +85,19 @@ struct Media {
     unsigned shown;
     unsigned dropped;
     uint64_t stat_ms;
+    uint64_t clock_start;
 };
+
+/* Playback position in seconds, taken from the system timer.
+ *
+ * PlayerNX simply shows the pictures as fast as they are decoded; using the
+ * system timer keeps the same real-time feel (no slow motion when the decoder
+ * is late, frames are dropped instead) while the sound is still pushed to the
+ * device as it is decoded. */
+static double elapsed(Player *m)
+{
+    return (double)(time_ms() - m->clock_start) / 1000.0;
+}
 
 /* ------------------------------------------------------------------------- */
 /* SD card I/O for FFmpeg                                                    */
@@ -220,9 +232,9 @@ static AVCodecContext *open_decoder(AVFormatContext *fmt, int index, bool is_vid
     return ctx;
 }
 
-Media *media_open(const char *path)
+Player *player_open(const char *path)
 {
-    Media *m = calloc(1, sizeof(*m));
+    Player *m = calloc(1, sizeof(*m));
     AVStream *vstream;
     uint8_t *iobuf;
 
@@ -313,11 +325,11 @@ Media *media_open(const char *path)
     return m;
 
 fail:
-    media_close(m);
+    player_close(m);
     return NULL;
 }
 
-void media_close(Media *m)
+void player_close(Player *m)
 {
     if (m == NULL)
         return;
@@ -352,7 +364,7 @@ void media_close(Media *m)
 /* Presentation                                                              */
 /* ------------------------------------------------------------------------- */
 
-static double frame_pts(Media *m, AVFrame *frame)
+static double frame_pts(Player *m, AVFrame *frame)
 {
     double pts;
 
@@ -370,7 +382,7 @@ static double frame_pts(Media *m, AVFrame *frame)
 
 /* Decodes one picture directly into the framebuffer, scaled to fit the screen
  * with black letterbox bars. */
-static bool convert_and_show(Media *m, AVFrame *frame)
+static bool convert_and_show(Player *m, AVFrame *frame)
 {
     int out_w = 0;
     int out_h = 0;
@@ -384,7 +396,7 @@ static bool convert_and_show(Media *m, AVFrame *frame)
     uint8_t *dst_data[4];
     int dst_linesize[4];
 
-    video_output_size(&out_w, &out_h);
+    gfx_size(&out_w, &out_h);
 
     scale = (double)out_w / (double)frame->width;
     if ((double)out_h / (double)frame->height < scale)
@@ -423,7 +435,7 @@ static bool convert_and_show(Media *m, AVFrame *frame)
         m->src_fmt = frame->format;
     }
 
-    base = video_begin_frame(&stride);
+    base = gfx_begin_frame(&stride);
     if (base == NULL)
         return false;
 
@@ -446,11 +458,11 @@ static bool convert_and_show(Media *m, AVFrame *frame)
               (const uint8_t * const *)frame->data, frame->linesize, 0, frame->height,
               dst_data, dst_linesize);
 
-    video_end_frame();
+    gfx_end_frame();
     return true;
 }
 
-static bool show_frame(Media *m, AVFrame *frame, MediaIdleFn idle, void *user, bool timed)
+static bool show_frame(Player *m, AVFrame *frame, PlayerIdle idle, void *user, bool timed)
 {
     double pts = frame_pts(m, frame);
 
@@ -460,7 +472,7 @@ static bool show_frame(Media *m, AVFrame *frame, MediaIdleFn idle, void *user, b
         /* Late frames are dropped to keep sound and picture together, but a
          * decoder slower than real time must not leave the screen frozen on
          * one picture: after a few drops the next frame is shown anyway. */
-        if (audio_clock() - pts > VIDEO_LATE_TOLERANCE && m->late_streak < MAX_DROP_STREAK) {
+        if (elapsed(m) - pts > VIDEO_LATE_TOLERANCE && m->late_streak < MAX_DROP_STREAK) {
             m->late_streak++;
             m->dropped++;
             audio_pump();
@@ -468,7 +480,7 @@ static bool show_frame(Media *m, AVFrame *frame, MediaIdleFn idle, void *user, b
         }
 
         for (;;) {
-            double now = audio_clock();
+            double now = elapsed(m);
             double wait;
 
             if (now + PRESENT_LEAD >= pts)
@@ -501,7 +513,7 @@ static bool show_frame(Media *m, AVFrame *frame, MediaIdleFn idle, void *user, b
 /* Decoding                                                                  */
 /* ------------------------------------------------------------------------- */
 
-static bool drain_video(Media *m, MediaIdleFn idle, void *user, bool timed)
+static bool drain_video(Player *m, PlayerIdle idle, void *user, bool timed)
 {
     for (;;) {
         int ret = avcodec_receive_frame(m->vctx, m->frame);
@@ -520,7 +532,7 @@ static bool drain_video(Media *m, MediaIdleFn idle, void *user, bool timed)
     }
 }
 
-static bool setup_resampler(Media *m)
+static bool setup_resampler(Player *m)
 {
     AVChannelLayout out_layout;
     int ret;
@@ -542,7 +554,7 @@ static bool setup_resampler(Media *m)
     return swr_init(m->swr) >= 0;
 }
 
-static bool drain_audio(Media *m, MediaIdleFn idle, void *user)
+static bool drain_audio(Player *m, PlayerIdle idle, void *user)
 {
     for (;;) {
         int ret = avcodec_receive_frame(m->actx, m->frame);
@@ -588,17 +600,17 @@ static bool drain_audio(Media *m, MediaIdleFn idle, void *user)
 
         audio_pump();
 
-        /* Back pressure: never let the queue grow without bound. The wait is
-         * bounded so a dead audio device can never block the player. */
+        /* Short back pressure so the queue cannot grow without bound. It is
+         * bounded in time so a dead audio device never blocks the picture. */
         if (audio_queued_frames() > AUDIO_QUEUE_HIGH_FRAMES) {
             uint64_t wait_start = time_ms();
 
             while (audio_queued_frames() > AUDIO_QUEUE_HIGH_FRAMES) {
                 if (!idle(user))
                     return false;
-                if (time_ms() - wait_start > 3000)
+                if (time_ms() - wait_start > 50)
                     break;
-                svcSleepThread(5 * 1000 * 1000ULL);
+                svcSleepThread(2 * 1000 * 1000ULL);
             }
         }
     }
@@ -606,7 +618,7 @@ static bool drain_audio(Media *m, MediaIdleFn idle, void *user)
 
 /* An audio problem must never stop the picture: drop the audio track and
  * continue on the wall clock. */
-static void disable_audio(Media *m)
+static void disable_audio(Player *m)
 {
     if (m->actx != NULL)
         avcodec_free_context(&m->actx);
@@ -621,7 +633,7 @@ static void disable_audio(Media *m)
 /* Playback                                                                  */
 /* ------------------------------------------------------------------------- */
 
-static void rewind_media(Media *m)
+static void rewind_media(Player *m)
 {
     av_seek_frame(m->fmt, -1, 0, AVSEEK_FLAG_BACKWARD);
 
@@ -635,7 +647,7 @@ static void rewind_media(Media *m)
     m->last_pts = 0.0;
 }
 
-bool media_first_frame(Media *m)
+bool player_first_frame(Player *m)
 {
     /* Silence the device: nothing must be heard during the two seconds the
      * first picture is held on screen. */
@@ -672,7 +684,7 @@ bool media_first_frame(Media *m)
  * the way are skipped: the audio timeline starts once the picture is on
  * screen, otherwise the sound immediately runs ahead of a frame that has not
  * been decoded yet and every following frame looks late. */
-static bool first_frame_of_loop(Media *m, MediaIdleFn idle, void *user)
+static bool first_frame_of_loop(Player *m, PlayerIdle idle, void *user)
 {
     for (;;) {
         int ret;
@@ -702,7 +714,7 @@ static bool first_frame_of_loop(Media *m, MediaIdleFn idle, void *user)
     }
 }
 
-bool media_play(Media *m, MediaIdleFn idle, void *user)
+bool player_play(Player *m, PlayerIdle idle, void *user)
 {
     rewind_media(m);
 
@@ -717,7 +729,7 @@ bool media_play(Media *m, MediaIdleFn idle, void *user)
     }
 
     audio_start();
-    audio_use_wallclock(m->as < 0 || !audio_available());
+    m->clock_start = time_ms();
 
     for (;;) {
         int ret;
@@ -753,7 +765,7 @@ bool media_play(Media *m, MediaIdleFn idle, void *user)
         if (time_ms() - m->stat_ms >= 2000) {
             m->stat_ms = time_ms();
             log_line("playing: %u shown, %u dropped, clock %.1fs",
-                     m->shown, m->dropped, audio_clock());
+                     m->shown, m->dropped, elapsed(m));
         }
 
         if (!ok) {

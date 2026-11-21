@@ -1,4 +1,28 @@
-# Grand Theft Auto VI — homebrew Nintendo Switch
+# Grand Theft Auto VI
+
+Lecteur vidéo plein écran pour Nintendo Switch, en homebrew (NRO). Il lit
+**`sdmc:/switch/gtaVI/video.mp4`** dès le lancement, en boucle, avec le son, et
+sans aucune interface. Le bouton **+** quitte l'application.
+
+## Version 1.0.0.1 — base PlayerNX
+
+Le lecteur est désormais construit sur le même principe que
+[PlayerNX](https://github.com/XorTroll/PlayerNX) :
+
+* rendu **1280×720** dans la fenêtre par défaut de libnx (le compositeur
+  agrandit l'image à l'écran), comme PlayerNX ;
+* trois modules seulement : `main.c` (démarrage direct), `player.c` (démuxage,
+  décodage, lecture) et `gfx.c` (framebuffer) ;
+* lecture **immédiate** du fichier, sans menu ni sélection.
+
+L'API `gfx*` de PlayerNX (2018) n'existe plus dans libnx 4.x : l'équivalent
+moderne (`framebufferCreate` + mode linéaire) est utilisé à la place, avec le
+même résultat — une image plein écran écrite directement en mémoire.
+
+Deux ajouts par rapport à PlayerNX : le **son** (`audout`, avec son propre
+thread) et la **synchronisation** sur l'horloge système, pour que la vidéo
+avance au rythme réel et saute des images plutôt que de ralentir.
+
 
 Application homebrew Nintendo Switch (format NRO) qui lit une vidéo MP4 en
 plein écran avec le son, en boucle, sans aucune interface : pas de menu, pas de
@@ -30,12 +54,12 @@ s'arrête immédiatement.
    `video.mp4`.
 3. Lancez **Grand Theft Auto VI** depuis le Homebrew Menu.
 
-L'archive `gtaVI-3.1.1.zip` contient l'arborescence `switch/gtaVI/` :
+L'archive `gtaVI-1.0.0.1.zip` contient l'arborescence `switch/gtaVI/` :
 décompressez-la directement à la racine de la carte SD, puis ajoutez votre
 `video.mp4` dans `sdmc:/switch/gtaVI/`.
 
 ```
-gtaVI-3.1.1.zip
+gtaVI-1.0.0.1.zip
 └── switch/
     └── gtaVI/
         ├── gtaVI.nro
@@ -90,7 +114,7 @@ nécessaire.
 ```bash
 export DEVKITPRO=/opt/devkitpro
 make            # produit gtaVI.elf, gtaVI.nacp et gtaVI.nro
-make dist       # produit dist/gtaVI-3.1.1.zip
+make dist       # produit dist/gtaVI-1.0.0.1.zip
 ```
 
 ou, en une commande :
@@ -102,7 +126,7 @@ ou, en une commande :
 Détails de la compilation :
 
 * Le NACP est généré par `nacptool` (nom affiché : **Grand Theft Auto VI**,
-  version 3.1.1) puis embarqué par `elf2nro`.
+  version 1.0.0.1) puis embarqué par `elf2nro`.
 * L'icône du Homebrew Menu est `icon.jpg`, conversion 256×256 du logo fourni
   dans le dépôt (`logovideo.png`).
 * Le NRO final s'appelle exactement `gtaVI.nro`.
@@ -113,9 +137,9 @@ Détails de la compilation :
 Makefile              compilation devkitPro/libnx
 build.sh              script de compilation + archive d'installation
 source/main.c         point d'entrée, boucle, phase de 2 s, bouton +
-source/media.c/.h     démuxage MP4, décodage FFmpeg, synchronisation
+source/player.c/.h     démuxage MP4, décodage FFmpeg, synchronisation
 source/audio.c/.h     sortie audio audout (libnx) et horloge de lecture
-source/video.c/.h     framebuffer plein écran (libnx) et mise à l'échelle
+source/gfx.c/.h     framebuffer plein écran (libnx) et mise à l'échelle
 source/log.c/.h       journal de diagnostic sur la carte SD
 source/timebase.c/.h  horloge monotone en millisecondes
 icon.jpg              icône 256×256 du Homebrew Menu (issue de logovideo.png)

@@ -51,7 +51,7 @@ des images, mais le son reste synchronise.
 VERSION
 -------
 
-Grand Theft Auto VI 3.1.1
+Grand Theft Auto VI 1.0.0.1
 
 En cas de probleme au lancement, un journal est ecrit a cote du NRO :
 

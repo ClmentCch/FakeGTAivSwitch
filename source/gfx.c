@@ -7,7 +7,7 @@
  * needs.
  */
 
-#include "video.h"
+#include "gfx.h"
 
 #include "log.h"
 
@@ -25,7 +25,7 @@
 static Framebuffer s_fb;
 static bool        s_ready;
 
-bool video_init(void)
+bool gfx_init(void)
 {
     Result rc;
 
@@ -62,7 +62,7 @@ bool video_init(void)
     return true;
 }
 
-void video_exit(void)
+void gfx_exit(void)
 {
     if (s_ready) {
         framebufferClose(&s_fb);
@@ -70,7 +70,7 @@ void video_exit(void)
     }
 }
 
-void video_output_size(int *width, int *height)
+void gfx_size(int *width, int *height)
 {
     if (width != NULL)
         *width = SCREEN_WIDTH;
@@ -78,7 +78,7 @@ void video_output_size(int *width, int *height)
         *height = SCREEN_HEIGHT;
 }
 
-uint8_t *video_begin_frame(uint32_t *stride)
+uint8_t *gfx_begin_frame(uint32_t *stride)
 {
     u32 row_stride = 0;
     uint8_t *pixels;
@@ -93,7 +93,7 @@ uint8_t *video_begin_frame(uint32_t *stride)
     return pixels;
 }
 
-void video_end_frame(void)
+void gfx_end_frame(void)
 {
     if (s_ready)
         framebufferEnd(&s_fb);

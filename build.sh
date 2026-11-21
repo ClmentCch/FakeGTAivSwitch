@@ -27,4 +27,4 @@ make dist
 echo
 echo "Artifacts:"
 echo "  $(pwd)/gtaVI.nro"
-echo "  $(pwd)/dist/gtaVI-3.1.1.zip  (contient switch/gtaVI/)"
+echo "  $(pwd)/dist/gtaVI-1.0.0.1.zip  (contient switch/gtaVI/)"

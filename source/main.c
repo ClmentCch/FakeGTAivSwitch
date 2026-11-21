@@ -18,9 +18,9 @@
 
 #include "audio.h"
 #include "log.h"
-#include "media.h"
+#include "player.h"
 #include "timebase.h"
-#include "video.h"
+#include "gfx.h"
 
 /* Time the first frame stays on screen before each playback. */
 #define FIRST_FRAME_HOLD_MS 2000u
@@ -56,7 +56,7 @@ static void hold_first_frame(void)
 
 int main(int argc, char **argv)
 {
-    Media *media = NULL;
+    Player *media = NULL;
     unsigned loop = 0;
     int rc = EXIT_FAILURE;
 
@@ -80,7 +80,7 @@ int main(int argc, char **argv)
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&s_pad);
 
-    if (!video_init())
+    if (!gfx_init())
         goto cleanup;
 
     if (audio_init())
@@ -91,14 +91,14 @@ int main(int argc, char **argv)
     if (R_SUCCEEDED(appletSetAutoSleepDisabled(true)))
         log_line("auto sleep disabled");
 
-    media = media_open(VIDEO_PATH);
+    media = player_open(VIDEO_PATH);
     if (media == NULL)
         goto cleanup;
 
     while (!s_quit) {
         loop++;
 
-        if (!media_first_frame(media)) {
+        if (!player_first_frame(media)) {
             log_line("loop %u: cannot decode the first frame", loop);
             break;
         }
@@ -110,7 +110,7 @@ int main(int argc, char **argv)
 
         log_line("loop %u: playing", loop);
 
-        if (!media_play(media, pump_events, NULL))
+        if (!player_play(media, pump_events, NULL))
             break;
     }
 
@@ -118,9 +118,9 @@ int main(int argc, char **argv)
     rc = EXIT_SUCCESS;
 
 cleanup:
-    media_close(media);
+    player_close(media);
     audio_exit();
-    video_exit();
+    gfx_exit();
 
     appletSetAutoSleepDisabled(false);
 

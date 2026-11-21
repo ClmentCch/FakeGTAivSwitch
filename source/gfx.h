@@ -12,13 +12,13 @@
 #include <stdint.h>
 
 /* Creates the full screen (1920x1080) framebuffer. */
-bool video_init(void);
-void video_exit(void);
+bool gfx_init(void);
+void gfx_exit(void);
 
 /* Size of the display surface. */
-void video_output_size(int *width, int *height);
+void gfx_size(int *width, int *height);
 
 /* Returns the memory of the frame being written and its row stride in bytes.
- * The caller fills it with RGBA pixels and then calls video_end_frame(). */
-uint8_t *video_begin_frame(uint32_t *stride);
-void video_end_frame(void);
+ * The caller fills it with RGBA pixels and then calls gfx_end_frame(). */
+uint8_t *gfx_begin_frame(uint32_t *stride);
+void gfx_end_frame(void);

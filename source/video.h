@@ -1,5 +1,9 @@
 /*
- * video.h - full screen video output built on SDL2.
+ * video.h - full screen video output through the libnx framebuffer.
+ *
+ * No SDL, no OpenGL: the decoder converts its picture straight into the
+ * console framebuffer, which is the simplest and most reliable path for a
+ * homebrew application (it is the same path the console text renderer uses).
  */
 
 #pragma once
@@ -7,14 +11,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Creates the full screen window and the hardware renderer. */
+/* Creates the full screen (1920x1080) framebuffer. */
 bool video_init(void);
 void video_exit(void);
 
-/* Uploads one BGRA frame (the pixel format produced by libswscale) and
- * queues it for rendering, scaled to fit the screen while keeping the
- * source aspect ratio. */
-void video_show(const uint8_t *pixels, int stride, int width, int height);
+/* Size of the display surface. */
+void video_output_size(int *width, int *height);
 
-/* Presents the frame queued by video_show(). */
-void video_present(void);
+/* Returns the memory of the frame being written and its row stride in bytes.
+ * The caller fills it with RGBA pixels and then calls video_end_frame(). */
+uint8_t *video_begin_frame(uint32_t *stride);
+void video_end_frame(void);

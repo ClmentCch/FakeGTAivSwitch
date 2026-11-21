@@ -27,7 +27,7 @@ NACP        := $(TARGET).nacp
 
 APP_TITLE   := Grand Theft Auto VI
 APP_AUTHOR  := ClmentCch
-APP_VERSION := 1.3.0
+APP_VERSION := 2.0.0
 
 ARCH        := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE -ftls-model=local-exec
 
@@ -37,10 +37,12 @@ CFLAGS      := -g -O2 -Wall -Wextra -Wno-unused-parameter -std=gnu17 \
                -I$(DEVKITPRO)/libnx/include -I$(PORTLIBS)/include
 
 LDFLAGS     := -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) \
+               -Wl,--gc-sections -Wl,--as-needed \
                -L$(DEVKITPRO)/libnx/lib -L$(PORTLIBS)/lib
 
-LIBS        := -lSDL2 -lEGL -lGLESv2 -lglapi -ldrm_nouveau -lstdc++ \
-               -lavformat -lavcodec -lswresample -lswscale -lavutil -ldav1d \
+# No SDL: the console framebuffer and audout come straight from libnx, which
+# keeps the NRO small enough to load and removes a whole layer that can fail.
+LIBS        := -lavformat -lavcodec -lswresample -lswscale -lavutil -ldav1d \
                -lz -lbz2 -lm -lpthread -lnx
 
 SOURCES     := $(wildcard $(SRC)/*.c)

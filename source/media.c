@@ -7,26 +7,23 @@
  * protocol set.
  *
  * libavformat reads the container, libavcodec decodes the video and audio
- * streams, libswscale converts the decoded pictures to BGRA for the SDL
- * renderer and libswresample converts the audio to the stereo s16 stream the
- * audio device expects.
+ * streams, libswscale converts the picture straight into the console
+ * framebuffer (scaled and letterboxed) and libswresample converts the audio to
+ * the stereo s16 stream the audio device expects.
  *
  * The player runs on a single thread: the demuxer is read packet by packet,
- * audio is pushed to the audio queue (which is also the master clock) and
- * video frames are presented when their timestamp is reached on that clock.
- * Reading keeps going while the picture waits, so the audio queue never runs
- * dry for the duration of one frame.
+ * audio is pushed to the device (which is also the master clock) and video
+ * frames are presented when their timestamp is reached on that clock.
  */
 
 #include "media.h"
 
 #include "audio.h"
 #include "log.h"
+#include "timebase.h"
 #include "video.h"
 
 #include <switch.h>
-
-#include <SDL2/SDL_timer.h>
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -35,19 +32,20 @@
 #include <libswscale/swscale.h>
 
 #include <errno.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* At most half a second of audio is queued ahead of the device. */
+/* Audio is kept at most half a second ahead of the device. */
 #define AUDIO_QUEUE_HIGH_FRAMES 24000
 
 /* Frames arriving later than this are dropped to keep sound and picture
  * together. */
 #define VIDEO_LATE_TOLERANCE 0.045
 
-/* Small head start that compensates the compositor/presentation latency. */
+/* Small head start that compensates the presentation latency. */
 #define PRESENT_LEAD 0.008
 
 /* Size of the buffer FFmpeg reads from the SD card through. */
@@ -62,20 +60,22 @@ struct Media {
     struct SwsContext *sws;
     SwrContext      *swr;
     AVFrame         *frame;
-    AVFrame         *rgb;
     AVPacket        *pkt;
 
     int     vs;
     int     as;
     double  vtb;
     int64_t vstart;
-    int     vw;
-    int     vh;
+
+    /* Geometry the current scaling context was built for. */
+    int vw, vh;
+    int dw, dh;
+    int src_fmt;
 
     int16_t *pcm;
     int      pcm_frames;
 
-    double   last_pts;
+    double last_pts;
 };
 
 /* ------------------------------------------------------------------------- */
@@ -168,6 +168,7 @@ static AVCodecContext *open_decoder(AVFormatContext *fmt, int index)
     }
 
     ctx->pkt_timebase = stream->time_base;
+    ctx->thread_count = 3; /* bounded memory on the console */
 
     ret = avcodec_open2(ctx, codec, NULL);
     if (ret < 0) {
@@ -189,6 +190,7 @@ Media *media_open(const char *path)
 
     m->vs = -1;
     m->as = -1;
+    m->src_fmt = -1;
 
     av_log_set_level(AV_LOG_WARNING);
     av_log_set_callback(ffmpeg_log_cb);
@@ -254,18 +256,17 @@ Media *media_open(const char *path)
     m->vtb = av_q2d(vstream->time_base);
     m->vstart = vstream->start_time == AV_NOPTS_VALUE ? 0 : vstream->start_time;
 
+    m->pkt = av_packet_alloc();
+    m->frame = av_frame_alloc();
+    if (m->pkt == NULL || m->frame == NULL)
+        goto fail;
+
     log_line("media: %dx%d %s, %.2f fps, %.1f s, threads %d, audio %d",
              m->vctx->width, m->vctx->height,
              avcodec_get_name(m->vctx->codec_id),
              vstream->avg_frame_rate.num != 0 ? av_q2d(vstream->avg_frame_rate) : 0.0,
              m->fmt->duration > 0 ? (double)m->fmt->duration / (double)AV_TIME_BASE : 0.0,
              m->vctx->thread_count, m->as);
-
-    m->pkt = av_packet_alloc();
-    m->frame = av_frame_alloc();
-    m->rgb = av_frame_alloc();
-    if (m->pkt == NULL || m->frame == NULL || m->rgb == NULL)
-        goto fail;
 
     return m;
 
@@ -283,8 +284,6 @@ void media_close(Media *m)
         sws_freeContext(m->sws);
     if (m->swr != NULL)
         swr_free(&m->swr);
-    if (m->rgb != NULL)
-        av_frame_free(&m->rgb);
     if (m->frame != NULL)
         av_frame_free(&m->frame);
     if (m->pkt != NULL)
@@ -327,42 +326,83 @@ static double frame_pts(Media *m, AVFrame *frame)
     return pts;
 }
 
+/* Decodes one picture directly into the framebuffer, scaled to fit the screen
+ * with black letterbox bars. */
 static bool convert_and_show(Media *m, AVFrame *frame)
 {
-    int ret;
+    int out_w = 0;
+    int out_h = 0;
+    int dst_w;
+    int dst_h;
+    int off_x;
+    int off_y;
+    double scale;
+    u32 stride = 0;
+    uint8_t *base;
+    uint8_t *dst_data[4];
+    int dst_linesize[4];
 
-    if (m->sws == NULL || m->vw != frame->width || m->vh != frame->height) {
+    video_output_size(&out_w, &out_h);
+
+    scale = (double)out_w / (double)frame->width;
+    if ((double)out_h / (double)frame->height < scale)
+        scale = (double)out_h / (double)frame->height;
+
+    dst_w = (int)((double)frame->width * scale);
+    dst_h = (int)((double)frame->height * scale);
+    if (dst_w < 2)
+        dst_w = 2;
+    if (dst_h < 2)
+        dst_h = 2;
+    if (dst_w > out_w)
+        dst_w = out_w;
+    if (dst_h > out_h)
+        dst_h = out_h;
+
+    off_x = (out_w - dst_w) / 2;
+    off_y = (out_h - dst_h) / 2;
+
+    if (m->sws == NULL || m->vw != frame->width || m->vh != frame->height ||
+        m->dw != dst_w || m->dh != dst_h || m->src_fmt != frame->format) {
         if (m->sws != NULL)
             sws_freeContext(m->sws);
 
-        m->sws = sws_getContext(frame->width, frame->height, (enum AVPixelFormat)frame->format,
-                                frame->width, frame->height, AV_PIX_FMT_BGRA,
-                                SWS_BILINEAR, NULL, NULL, NULL);
+        m->sws = sws_getContext(frame->width, frame->height,
+                                (enum AVPixelFormat)frame->format,
+                                dst_w, dst_h, AV_PIX_FMT_RGBA,
+                                SWS_FAST_BILINEAR, NULL, NULL, NULL);
         if (m->sws == NULL)
-            return false;
-
-        av_frame_unref(m->rgb);
-        m->rgb->format = AV_PIX_FMT_BGRA;
-        m->rgb->width = frame->width;
-        m->rgb->height = frame->height;
-
-        ret = av_frame_get_buffer(m->rgb, 32);
-        if (ret < 0)
             return false;
 
         m->vw = frame->width;
         m->vh = frame->height;
+        m->dw = dst_w;
+        m->dh = dst_h;
+        m->src_fmt = frame->format;
     }
 
-    ret = av_frame_make_writable(m->rgb);
-    if (ret < 0)
+    base = video_begin_frame(&stride);
+    if (base == NULL)
         return false;
+
+    /* Letterbox bars are black. */
+    memset(base, 0, (size_t)stride * (size_t)out_h);
+
+    dst_data[0] = base + (size_t)off_y * (size_t)stride + (size_t)off_x * 4u;
+    dst_data[1] = NULL;
+    dst_data[2] = NULL;
+    dst_data[3] = NULL;
+
+    dst_linesize[0] = (int)stride;
+    dst_linesize[1] = 0;
+    dst_linesize[2] = 0;
+    dst_linesize[3] = 0;
 
     sws_scale(m->sws,
               (const uint8_t * const *)frame->data, frame->linesize, 0, frame->height,
-              m->rgb->data, m->rgb->linesize);
+              dst_data, dst_linesize);
 
-    video_show(m->rgb->data[0], m->rgb->linesize[0], m->vw, m->vh);
+    video_end_frame();
     return true;
 }
 
@@ -371,10 +411,12 @@ static bool show_frame(Media *m, AVFrame *frame, MediaIdleFn idle, void *user, b
     double pts = frame_pts(m, frame);
 
     if (timed) {
-        double wait_start = (double)SDL_GetTicks64() / 1000.0;
+        uint64_t wait_start = time_ms();
 
-        if (audio_clock() - pts > VIDEO_LATE_TOLERANCE)
+        if (audio_clock() - pts > VIDEO_LATE_TOLERANCE) {
+            audio_pump();
             return true; /* too late: drop it and stay in sync */
+        }
 
         for (;;) {
             double now = audio_clock();
@@ -385,7 +427,7 @@ static bool show_frame(Media *m, AVFrame *frame, MediaIdleFn idle, void *user, b
 
             /* Never block on a clock that stopped moving (for example when
              * the first audio samples have not been decoded yet). */
-            if ((double)SDL_GetTicks64() / 1000.0 - wait_start > 0.150)
+            if (time_ms() - wait_start > 150)
                 break;
 
             if (!idle(user))
@@ -400,11 +442,7 @@ static bool show_frame(Media *m, AVFrame *frame, MediaIdleFn idle, void *user, b
         }
     }
 
-    if (!convert_and_show(m, frame))
-        return false;
-
-    video_present();
-    return true;
+    return convert_and_show(m, frame);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -471,7 +509,8 @@ static bool drain_audio(Media *m, MediaIdleFn idle, void *user)
             return false;
         }
 
-        out_max = (int)av_rescale_rnd(swr_get_delay(m->swr, m->actx->sample_rate) + m->frame->nb_samples,
+        out_max = (int)av_rescale_rnd(swr_get_delay(m->swr, m->actx->sample_rate) +
+                                      m->frame->nb_samples,
                                       audio_rate(), m->actx->sample_rate, AV_ROUND_UP) + 64;
 
         if (out_max > m->pcm_frames) {
@@ -495,15 +534,17 @@ static bool drain_audio(Media *m, MediaIdleFn idle, void *user)
         if (got > 0)
             audio_push(m->pcm, got);
 
+        audio_pump();
+
         /* Back pressure: never let the queue grow without bound. The wait is
          * bounded so a dead audio device can never block the player. */
         if (audio_queued_frames() > AUDIO_QUEUE_HIGH_FRAMES) {
-            u64 wait_start = SDL_GetTicks64();
+            uint64_t wait_start = time_ms();
 
             while (audio_queued_frames() > AUDIO_QUEUE_HIGH_FRAMES) {
                 if (!idle(user))
                     return false;
-                if (SDL_GetTicks64() - wait_start > 3000)
+                if (time_ms() - wait_start > 3000)
                     break;
                 svcSleepThread(5 * 1000 * 1000ULL);
             }
@@ -570,10 +611,8 @@ bool media_first_frame(Media *m)
 
         av_packet_unref(m->pkt);
 
-        if (shown) {
-            video_present();
+        if (shown)
             return true;
-        }
     }
 }
 
@@ -590,6 +629,8 @@ bool media_play(Media *m, MediaIdleFn idle, void *user)
 
         if (!idle(user))
             return false;
+
+        audio_pump();
 
         ret = av_read_frame(m->fmt, m->pkt);
 
@@ -645,12 +686,13 @@ bool media_play(Media *m, MediaIdleFn idle, void *user)
 
     /* Let the last samples reach the speakers before the loop restarts. */
     {
-        u64 start = SDL_GetTicks64();
+        uint64_t start = time_ms();
 
         while (audio_queued_frames() > 0) {
             if (!idle(user))
                 return false;
-            if (SDL_GetTicks64() - start > 5000)
+            audio_pump();
+            if (time_ms() - start > 5000)
                 break;
             svcSleepThread(10 * 1000 * 1000ULL);
         }

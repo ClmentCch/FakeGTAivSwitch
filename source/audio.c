@@ -1,144 +1,374 @@
 /*
- * audio.c - SDL audio output and playback clock.
+ * audio.c - sound output through libnx audout and the playback clock.
+ *
+ * audout plays fixed buffers that are handed to it: the decoder's samples are
+ * accumulated in a ring buffer, then copied into device buffers as they are
+ * released. The device consumes samples at the hardware rate, so the number of
+ * frames handed out minus the frames still queued is exactly the playback
+ * position, which is used as the master clock.
  */
 
 #include "audio.h"
 
-#include <SDL2/SDL.h>
+#include "log.h"
+#include "timebase.h"
+
 #include <switch.h>
 
-static SDL_AudioDeviceID s_device;
-static SDL_AudioSpec     s_spec;
+#include <stdlib.h>
+#include <string.h>
 
-static uint64_t s_written;      /* frames handed to the device            */
-static double   s_consumed;     /* last observed number of played frames   */
-static double   s_stall_offset; /* frames added when the device underruns  */
-static uint64_t s_progress_ms;  /* last time the play position advanced    */
-static uint64_t s_start_ms;     /* start of the wall-clock timeline        */
-static bool     s_paused;
+#define AUDIO_RATE   48000
+#define AUDIO_CHANNELS 2
+#define BYTES_PER_FRAME (AUDIO_CHANNELS * sizeof(int16_t))
+
+/* 3 seconds of slack between decoding and the device. */
+#define RING_BYTES (AUDIO_RATE * 3 * BYTES_PER_FRAME)
+
+/* 1024 frames = 4096 bytes = 0x1000, the alignment audout requires. */
+#define BUFFER_FRAMES 1024
+#define BUFFER_BYTES  (BUFFER_FRAMES * BYTES_PER_FRAME)
+#define BUFFER_COUNT  4
+
+/* audout wants buffers aligned to 0x1000 bytes. */
+static void *alloc_aligned(size_t size)
+{
+    size_t rounded = (size + 0xFFFu) & ~(size_t)0xFFFu;
+
+    return aligned_alloc(0x1000, rounded);
+}
+
+static bool s_ready;
+static u32  s_rate = AUDIO_RATE;
+
+static uint8_t *s_ring;
+static u32      s_head;
+static u32      s_used;
+
+static AudioOutBuffer s_buffers[BUFFER_COUNT];
+static void          *s_buffer_mem[BUFFER_COUNT];
+static int            s_free[BUFFER_COUNT];
+static int            s_free_count;
+
+static uint64_t s_written;       /* frames handed to the device         */
+static uint64_t s_queued;        /* frames still inside the device      */
+static double   s_consumed;      /* last observed played frame count    */
+static double   s_stall_offset;  /* frames added when the device stalls */
+static uint64_t s_progress_ms;
+static uint64_t s_start_ms;
 static bool     s_wallclock;
 
-static int frame_size(void)
+/* ------------------------------------------------------------------------- */
+/* Ring buffer                                                               */
+/* ------------------------------------------------------------------------- */
+
+static void ring_write(const uint8_t *src, u32 bytes)
 {
-    return s_spec.channels * (int)sizeof(int16_t);
+    u32 first = RING_BYTES - s_head;
+
+    if (bytes > first) {
+        memcpy(s_ring + s_head, src, first);
+        memcpy(s_ring, src + first, bytes - first);
+        s_head = bytes - first;
+    } else {
+        memcpy(s_ring + s_head, src, bytes);
+        s_head += bytes;
+        if (s_head == RING_BYTES)
+            s_head = 0;
+    }
+
+    s_used += bytes;
 }
+
+static void ring_read(uint8_t *dst, u32 bytes)
+{
+    u32 tail = (s_head + RING_BYTES - s_used) % RING_BYTES;
+    u32 first = RING_BYTES - tail;
+
+    if (bytes > first) {
+        memcpy(dst, s_ring + tail, first);
+        memcpy(dst + first, s_ring, bytes - first);
+    } else {
+        memcpy(dst, s_ring + tail, bytes);
+    }
+
+    s_used -= bytes;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Device buffers                                                            */
+/* ------------------------------------------------------------------------- */
+
+static int buffer_index(void *mem)
+{
+    for (int i = 0; i < BUFFER_COUNT; i++) {
+        if (s_buffer_mem[i] == mem)
+            return i;
+    }
+    return -1;
+}
+
+static void buffer_release(int index)
+{
+    s_free[s_free_count++] = index;
+}
+
+static int buffer_take(void)
+{
+    if (s_free_count == 0)
+        return -1;
+    return s_free[--s_free_count];
+}
+
+/* Collects the buffers the device has finished playing. */
+static void collect_released(void)
+{
+    for (;;) {
+        AudioOutBuffer *released = NULL;
+        u32 count = 0;
+        int index;
+
+        if (R_FAILED(audoutGetReleasedAudioOutBuffer(&released, &count)) || count == 0)
+            return;
+
+        for (u32 i = 0; i < count; i++) {
+            index = buffer_index(released[i].buffer);
+            if (index < 0)
+                continue;
+
+            if (s_queued >= released[i].data_size / BYTES_PER_FRAME)
+                s_queued -= released[i].data_size / BYTES_PER_FRAME;
+            else
+                s_queued = 0;
+
+            buffer_release(index);
+        }
+    }
+}
+
+void audio_pump(void)
+{
+    if (!s_ready)
+        return;
+
+    collect_released();
+
+    while (s_used > 0) {
+        int index = buffer_take();
+        u32 frames;
+        u32 bytes;
+
+        if (index < 0)
+            break;
+
+        frames = s_used / BYTES_PER_FRAME;
+        if (frames > BUFFER_FRAMES)
+            frames = BUFFER_FRAMES;
+        if (frames == 0) {
+            buffer_release(index);
+            break;
+        }
+
+        bytes = frames * BYTES_PER_FRAME;
+        ring_read(s_buffer_mem[index], bytes);
+
+        s_buffers[index].next = NULL;
+        s_buffers[index].buffer = s_buffer_mem[index];
+        s_buffers[index].buffer_size = BUFFER_BYTES;
+        s_buffers[index].data_size = bytes;
+        s_buffers[index].data_offset = 0;
+
+        if (R_FAILED(audoutAppendAudioOutBuffer(&s_buffers[index]))) {
+            buffer_release(index);
+            break;
+        }
+
+        s_written += frames;
+        s_queued += frames;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Setup                                                                     */
+/* ------------------------------------------------------------------------- */
 
 bool audio_init(void)
 {
-    SDL_AudioSpec want;
+    /* audout expects real buffers for the device names, so the first device
+     * reported by the service is passed in by name. */
+    char names[0x100 * 4];
+    char device_out[0x100];
+    const char *device_in = NULL;
+    s32 name_capacity = 4;
+    u32 name_count = 0;
+    PcmFormat format = PcmFormat_Int16;
+    AudioOutState state = AudioOutState_Stopped;
+    u32 channels_out = 0;
+    Result rc;
 
-    /* The audio subsystem is initialised on its own: a failure here must not
-     * take the video down with it. */
-    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0)
-        return false;
-
-    SDL_zero(want);
-    want.freq = 48000;
-    want.format = AUDIO_S16SYS;
-    want.channels = 2;
-    want.samples = 1024;
-
-    /* The Switch audio engine may impose its own rate and buffer size, so
-     * those two are allowed to change; the resampler follows the rate that is
-     * finally obtained. */
-    s_device = SDL_OpenAudioDevice(NULL, 0, &want, &s_spec,
-                                   SDL_AUDIO_ALLOW_FREQUENCY_CHANGE |
-                                   SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
-    if (s_device == 0)
-        return false;
-
-    if (s_spec.format != AUDIO_S16SYS || s_spec.channels != 2) {
-        SDL_CloseAudioDevice(s_device);
-        s_device = 0;
-        SDL_zero(s_spec);
+    rc = audoutInitialize();
+    if (R_FAILED(rc)) {
+        log_line("audoutInitialize failed: 0x%x", rc);
         return false;
     }
 
+    if (R_SUCCEEDED(audoutListAudioOuts(names, name_capacity, &name_count)) && name_count > 0)
+        device_in = names;
+
+    rc = audoutOpenAudioOut(device_in, device_out, AUDIO_RATE, AUDIO_CHANNELS,
+                            &s_rate, &channels_out, &format, &state);
+    if (R_FAILED(rc) || format != PcmFormat_Int16 || channels_out != AUDIO_CHANNELS) {
+        log_line("audoutOpenAudioOut failed: 0x%x (format %d, channels %u)",
+                 rc, (int)format, channels_out);
+        audoutExit();
+        return false;
+    }
+
+    s_ring = alloc_aligned(RING_BYTES);
+    if (s_ring == NULL) {
+        audoutExit();
+        return false;
+    }
+
+    for (int i = 0; i < BUFFER_COUNT; i++) {
+        s_buffer_mem[i] = alloc_aligned(BUFFER_BYTES);
+        if (s_buffer_mem[i] == NULL) {
+            audoutExit();
+            return false;
+        }
+        s_free[s_free_count++] = i;
+    }
+
+    rc = audoutStartAudioOut();
+    if (R_FAILED(rc)) {
+        log_line("audoutStartAudioOut failed: 0x%x", rc);
+        audoutExit();
+        return false;
+    }
+
+    s_ready = true;
     audio_start();
+
     return true;
 }
 
 void audio_exit(void)
 {
-    if (s_device != 0) {
-        SDL_CloseAudioDevice(s_device);
-        s_device = 0;
-        SDL_zero(s_spec);
+    if (!s_ready)
+        return;
+
+    audoutStopAudioOut();
+    audoutExit();
+
+    free(s_ring);
+    s_ring = NULL;
+
+    for (int i = 0; i < BUFFER_COUNT; i++) {
+        free(s_buffer_mem[i]);
+        s_buffer_mem[i] = NULL;
     }
+
+    s_free_count = 0;
+    s_ready = false;
 }
 
 bool audio_available(void)
 {
-    return s_device != 0;
+    return s_ready;
 }
 
 int audio_rate(void)
 {
-    return s_spec.freq > 0 ? s_spec.freq : 48000;
+    return (int)s_rate;
 }
 
 void audio_start(void)
 {
+    s_head = 0;
+    s_used = 0;
     s_written = 0;
+    s_queued = 0;
     s_consumed = 0.0;
     s_stall_offset = 0.0;
-    s_progress_ms = SDL_GetTicks64();
+    s_progress_ms = time_ms();
     s_start_ms = s_progress_ms;
-    s_paused = true;
-    s_wallclock = s_device == 0;
+    s_wallclock = !s_ready;
 
-    if (s_device == 0)
+    if (!s_ready)
         return;
 
-    SDL_PauseAudioDevice(s_device, 1);
-    SDL_ClearQueuedAudio(s_device);
+    /* Whatever was queued belongs to the previous loop: drop it so nothing is
+     * heard during the two seconds the first picture is held. */
+    {
+        bool flushed = false;
+
+        audoutFlushAudioOutBuffers(&flushed);
+
+        /* Give the buffers back after the flush. */
+        for (int i = 0; i < 8; i++) {
+            AudioOutBuffer *released = NULL;
+            u32 count = 0;
+
+            if (R_FAILED(audoutGetReleasedAudioOutBuffer(&released, &count)) || count == 0)
+                break;
+
+            for (u32 k = 0; k < count; k++) {
+                int index = buffer_index(released[k].buffer);
+                if (index >= 0 && s_free_count < BUFFER_COUNT)
+                    buffer_release(index);
+            }
+        }
+    }
 }
 
 void audio_push(const int16_t *frames, int count)
 {
-    if (s_device == 0 || frames == NULL || count <= 0)
+    u32 bytes;
+    u32 space;
+
+    if (!s_ready || frames == NULL || count <= 0)
         return;
 
-    if (s_paused) {
-        /* Start playing with the very first samples so no silence or
-         * underrun is heard at the beginning of a loop. The timeline only
-         * starts here, so nothing decoded before playback is counted. */
-        SDL_PauseAudioDevice(s_device, 0);
-        s_paused = false;
-        s_progress_ms = SDL_GetTicks64();
-        s_start_ms = s_progress_ms;
-        s_consumed = 0.0;
-        s_stall_offset = 0.0;
-    }
+    bytes = (u32)count * BYTES_PER_FRAME;
+    space = RING_BYTES - s_used;
 
-    SDL_QueueAudio(s_device, frames, (Uint32)count * (Uint32)frame_size());
-    s_written += (uint64_t)count;
+    if (bytes > space)
+        bytes = space - (space % BYTES_PER_FRAME); /* never split a frame */
+
+    if (bytes > 0)
+        ring_write((const uint8_t *)frames, bytes);
+
+    audio_pump();
 }
 
 int audio_queued_frames(void)
 {
-    if (s_device == 0)
+    if (!s_ready)
         return 0;
-    return (int)(SDL_GetQueuedAudioSize(s_device) / (Uint32)frame_size());
+
+    collect_released();
+
+    return (int)(s_used / BYTES_PER_FRAME + s_queued);
 }
 
 void audio_use_wallclock(bool enabled)
 {
-    s_wallclock = enabled || s_device == 0;
-    s_start_ms = SDL_GetTicks64();
+    s_wallclock = enabled || !s_ready;
+    s_start_ms = time_ms();
 }
 
 double audio_clock(void)
 {
     uint64_t now;
+    double played;
 
-    if (s_wallclock || s_device == 0)
-        return (double)(SDL_GetTicks64() - s_start_ms) / 1000.0;
+    if (s_wallclock || !s_ready)
+        return (double)(time_ms() - s_start_ms) / 1000.0;
 
-    double queued = (double)SDL_GetQueuedAudioSize(s_device) / (double)frame_size();
-    double played = (double)s_written - queued;
+    collect_released();
 
-    now = SDL_GetTicks64();
+    played = (double)s_written - (double)s_queued;
+    now = time_ms();
 
     if (played < 0.0)
         played = 0.0;
@@ -147,8 +377,8 @@ double audio_clock(void)
         s_consumed = played;
         s_progress_ms = now;
     } else if (now > s_progress_ms + 250) {
-        /* The device stopped consuming samples (underrun or no audio at
-         * all). Keep the timeline moving so the picture never freezes. */
+        /* The device stopped consuming samples: keep the timeline moving so
+         * the picture never freezes. */
         s_stall_offset += (double)(now - s_progress_ms);
         s_progress_ms = now;
     }

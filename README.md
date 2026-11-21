@@ -30,12 +30,12 @@ s'arrête immédiatement.
    `video.mp4`.
 3. Lancez **Grand Theft Auto VI** depuis le Homebrew Menu.
 
-L'archive `gtaVI-1.3.0.zip` contient l'arborescence `switch/gtaVI/` :
+L'archive `gtaVI-2.0.0.zip` contient l'arborescence `switch/gtaVI/` :
 décompressez-la directement à la racine de la carte SD, puis ajoutez votre
 `video.mp4` dans `sdmc:/switch/gtaVI/`.
 
 ```
-gtaVI-1.3.0.zip
+gtaVI-2.0.0.zip
 └── switch/
     └── gtaVI/
         ├── gtaVI.nro
@@ -55,7 +55,8 @@ Aucune connexion Internet n'est utilisée : tout est lu depuis la carte SD.
 ## Formats vidéo
 
 Le décodage est assuré par FFmpeg (libavformat / libavcodec / libswscale /
-libswresample) compilé pour la Switch, avec sortie SDL2 plein écran.
+libswresample) compilé pour la Switch, avec sortie plein écran directe dans le
+framebuffer de la console (libnx). Aucune dépendance à SDL ni à OpenGL.
 
 * Conteneur : MP4 (démuxeur `mov`) — MKV et les autres conteneurs reconnus par
   FFmpeg fonctionnent également.
@@ -83,12 +84,13 @@ lecture reste donc synchronisée du début à la fin, y compris à chaque boucle
 ## Compilation
 
 Prérequis : [devkitPro](https://devkitpro.org/wiki/Getting_Started) avec
-`devkitA64`, `libnx`, `switch-tools`, `switch-sdl2` et `switch-ffmpeg`.
+`devkitA64`, `libnx`, `switch-tools` et `switch-ffmpeg`. SDL2 n'est plus
+nécessaire.
 
 ```bash
 export DEVKITPRO=/opt/devkitpro
 make            # produit gtaVI.elf, gtaVI.nacp et gtaVI.nro
-make dist       # produit dist/gtaVI-1.3.0.zip
+make dist       # produit dist/gtaVI-2.0.0.zip
 ```
 
 ou, en une commande :
@@ -100,7 +102,7 @@ ou, en une commande :
 Détails de la compilation :
 
 * Le NACP est généré par `nacptool` (nom affiché : **Grand Theft Auto VI**,
-  version 1.3.0) puis embarqué par `elf2nro`.
+  version 2.0.0) puis embarqué par `elf2nro`.
 * L'icône du Homebrew Menu est `icon.jpg`, conversion 256×256 du logo fourni
   dans le dépôt (`logovideo.png`).
 * Le NRO final s'appelle exactement `gtaVI.nro`.
@@ -112,12 +114,29 @@ Makefile              compilation devkitPro/libnx
 build.sh              script de compilation + archive d'installation
 source/main.c         point d'entrée, boucle, phase de 2 s, bouton +
 source/media.c/.h     démuxage MP4, décodage FFmpeg, synchronisation
-source/audio.c/.h     sortie audio SDL et horloge de lecture
-source/video.c/.h     fenêtre plein écran SDL2 et rendu des images
+source/audio.c/.h     sortie audio audout (libnx) et horloge de lecture
+source/video.c/.h     framebuffer plein écran (libnx) et mise à l'échelle
+source/log.c/.h       journal de diagnostic sur la carte SD
+source/timebase.c/.h  horloge monotone en millisecondes
 icon.jpg              icône 256×256 du Homebrew Menu (issue de logovideo.png)
 logovideo.png         logo d'origine fourni dans le dépôt
 packaging/README.txt  notice incluse dans l'archive ZIP
 ```
+
+## Corrections de la version 2.0.0
+
+* **Nouveau moteur d'affichage** : SDL2 et OpenGL sont abandonnés au profit du
+  framebuffer natif de libnx (`framebufferCreate` en mode linéaire). Le décodeur
+  écrit l'image directement dans la mémoire de l'écran, sans couche
+  intermédiaire susceptible d'échouer au démarrage.
+* **Nouvelle sortie audio** : SDL2 est remplacé par `audout` de libnx, avec un
+  tampon circulaire de 3 s et quatre tampons de 1024 échantillons. Si la
+  console refuse le périphérique, la vidéo est lue silencieusement.
+* **Binaire beaucoup plus léger** : `-Wl,--gc-sections` supprime le code mort
+  et SDL n'est plus lié, ce qui fait passer le NRO de 20,7 Mo à 14,2 Mo —
+  moins de mémoire à allouer au chargement par hbmenu/sphaira.
+* Le journal `switch/gtaVI/gtaVI.log` reste écrit à chaque lancement et couvre
+  désormais l'initialisation du framebuffer, de l'audio et du fichier vidéo.
 
 ## Corrections de la version 1.3.0
 
@@ -155,7 +174,7 @@ packaging/README.txt  notice incluse dans l'archive ZIP
 
 ## Limites connues
 
-* Le NRO est compilé avec devkitA64, libnx, SDL2 et FFmpeg pour la Switch,
+* Le NRO est compilé avec devkitA64, libnx et FFmpeg pour la Switch,
   mais il n'a pas été exécuté sur une console physique lors de cette
   publication : la validation sur matériel réel reste à faire.
 * Pas de lecture réseau ni de flux : uniquement un fichier local.

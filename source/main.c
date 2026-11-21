@@ -63,10 +63,16 @@ int main(int argc, char **argv)
     (void)argc;
     (void)argv;
 
-    /* The log lives on the SD card, so it must be mounted first. */
-    fsInitialize();
-    if (R_FAILED(fsdevMountSdmc()))
-        return EXIT_FAILURE;
+    /* hbmenu and sphaira already mount the SD card inside the process that
+     * runs this NRO, so the "sdmc" device normally exists before main() is
+     * reached. Mounting it again fails (the devoptab name is taken) and an
+     * unconditional failure check here used to end the program before it could
+     * draw anything or write its log: that was the black screen followed by an
+     * immediate return to the Homebrew Menu. Only mount when it is missing. */
+    if (fsdevGetDeviceFileSystem("sdmc") == NULL) {
+        if (R_FAILED(fsInitialize()) || R_FAILED(fsdevMountSdmc()))
+            return EXIT_FAILURE;
+    }
 
     log_init();
     log_line("gtaVI " APP_VERSION " - starting");
@@ -121,8 +127,9 @@ cleanup:
     log_line("bye");
     log_close();
 
-    fsdevUnmountDevice("sdmc");
-    fsExit();
+    /* The file system and the SD card device belong to the launcher: they are
+     * deliberately not unmounted or closed, so hbmenu keeps working after the
+     * player exits. */
 
     return rc;
 }

@@ -27,7 +27,7 @@ NACP        := $(TARGET).nacp
 
 APP_TITLE   := Grand Theft Auto VI
 APP_AUTHOR  := ClmentCch
-APP_VERSION := 2.0.0
+APP_VERSION := 2.1.0
 
 ARCH        := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE -ftls-model=local-exec
 

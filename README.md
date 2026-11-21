@@ -30,12 +30,12 @@ s'arrête immédiatement.
    `video.mp4`.
 3. Lancez **Grand Theft Auto VI** depuis le Homebrew Menu.
 
-L'archive `gtaVI-2.0.0.zip` contient l'arborescence `switch/gtaVI/` :
+L'archive `gtaVI-2.1.0.zip` contient l'arborescence `switch/gtaVI/` :
 décompressez-la directement à la racine de la carte SD, puis ajoutez votre
 `video.mp4` dans `sdmc:/switch/gtaVI/`.
 
 ```
-gtaVI-2.0.0.zip
+gtaVI-2.1.0.zip
 └── switch/
     └── gtaVI/
         ├── gtaVI.nro
@@ -90,7 +90,7 @@ nécessaire.
 ```bash
 export DEVKITPRO=/opt/devkitpro
 make            # produit gtaVI.elf, gtaVI.nacp et gtaVI.nro
-make dist       # produit dist/gtaVI-2.0.0.zip
+make dist       # produit dist/gtaVI-2.1.0.zip
 ```
 
 ou, en une commande :
@@ -102,7 +102,7 @@ ou, en une commande :
 Détails de la compilation :
 
 * Le NACP est généré par `nacptool` (nom affiché : **Grand Theft Auto VI**,
-  version 2.0.0) puis embarqué par `elf2nro`.
+  version 2.1.0) puis embarqué par `elf2nro`.
 * L'icône du Homebrew Menu est `icon.jpg`, conversion 256×256 du logo fourni
   dans le dépôt (`logovideo.png`).
 * Le NRO final s'appelle exactement `gtaVI.nro`.
@@ -122,6 +122,18 @@ icon.jpg              icône 256×256 du Homebrew Menu (issue de logovideo.png)
 logovideo.png         logo d'origine fourni dans le dépôt
 packaging/README.txt  notice incluse dans l'archive ZIP
 ```
+
+## Corrections de la version 2.1.0
+
+* **Cause du plantage au lancement** : le programme appelait
+  `fsInitialize()` puis `fsdevMountSdmc()` et quittait si le montage échouait.
+  Or hbmenu et sphaira **montent déjà `sdmc`** dans le processus qui exécute le
+  NRO : le périphérique existe avant `main()`, le second montage échoue, et
+  l'application se terminait avant même d'écrire son journal — d'où l'écran
+  noir de 0,3 s et le retour immédiat au menu, sans fichier `gtaVI.log`.
+  Le montage n'est plus tenté que si `sdmc` est absent, et le système de
+  fichiers du lanceur n'est plus fermé ni démonté à la sortie.
+* Le journal est donc enfin créé : `switch/gtaVI/gtaVI.log`.
 
 ## Corrections de la version 2.0.0
 
